@@ -1,0 +1,6 @@
+.data
+.reference
+.weights
+.vscode
+__pycache__/
+*.log
