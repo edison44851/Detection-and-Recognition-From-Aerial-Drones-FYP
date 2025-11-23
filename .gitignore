@@ -2,5 +2,7 @@
 .reference
 .weights
 .vscode
-__pycache__/
+__pycache__
 *.log
+.unit_test
+checkpoints

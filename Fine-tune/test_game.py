@@ -61,7 +61,12 @@ if __name__ == '__main__':
         else:
             assert inputs.size(0) == 1, 'the batch size should equal to 1 in validation mode'
         with torch.set_grad_enabled(False):
-            outputs, _ = model(inputs[0], inputs[1])
+            res = model(inputs[0], inputs[1])
+            # Swin_BM_RGBT may return `density` or `(density, features)` depending on `return_feats` flag.
+            if isinstance(res, tuple):
+                outputs = res[0]
+            else:
+                outputs = res
             epoch_minus.append(torch.sum(outputs).item() - torch.sum(target).item())
             print(i, torch.sum(target).item(), torch.sum(outputs).item(),
                   torch.sum(outputs).item() - torch.sum(target).item())

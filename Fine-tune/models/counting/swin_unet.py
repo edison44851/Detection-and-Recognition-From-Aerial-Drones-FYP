@@ -714,11 +714,25 @@ class Swin_BM_RGBT(nn.Module):
             unet_weight = OrderedDict((key.replace('unet.', ''), value) for key, value in unet_weight.items())
             logging.info(self.unet.load_state_dict(unet_weight))
 
-    def forward(self, rgb, t):
+    def forward(self, rgb, t, return_feats: bool = False):
+        """Forward.
+
+        Args:
+            rgb: RGB tensor [B,3,H,W]
+            t: thermal tensor [B,3,H,W] or same channels
+            return_feats: if True, return (density_map, features), else return density_map only
+        """
         b = self.backbone(self.unet(rgb, t))
         r, t = self.backbone(rgb), self.backbone(t)
         features = r + t + b
-        return torch.abs(self.reg_layer(features / 3)), features
+        density = torch.abs(self.reg_layer(features / 3))
+        if return_feats:
+            return density, features
+        return density
+
+    def get_backbone_features(self, x):
+        """Return backbone features for a single-modality input x."""
+        return self.backbone(x)
 
 
 def count_parameters(model):
