@@ -15,20 +15,55 @@ Where to find details
 - Implementation notes, tests, quick-run logs and discussion are collected under the `.plan/` directory. Start with `.plan/extension_progress.md` for a short status and next actions.
 
 Quick examples
+We strongly recommend using the convenience launcher `tools/train_entry.sh` for training. It wraps `torchrun` safely, sets sensible defaults, and forwards extra flags to `Fine-tune/train.py`.
+
 - Train detection head (single-GPU):
   ```bash
-  python3 Fine-tune/train.py --data-dir ./.data/DroneRGBT_counting --save-dir ./checkpoints --task detection --batch-size 1 --freeze-backbone --resume .weights/drone_rgbt_best_494_781.pth --max-epoch 50 --device 0
+  tools/train_entry.sh --data-dir .data/DroneRGBT_counting --save-dir ./checkpoints --nproc 1 --device 0 --batch-size 1 --max-epoch 50 -- --freeze-backbone --resume .weights/drone_rgbt_best_494_781.pth
   ```
 
-- Launch via `torchrun` helper (example):
+- Train detection head (multi-GPU on one node):
   ```bash
-  ./tools/run_torchrun_train_detector.sh --data-dir .data/DroneRGBT_counting --save-dir ./ckpt_verify --nproc 1 --device 0
+  tools/train_entry.sh --data-dir .data/DroneRGBT_counting --save-dir ./checkpoints --nproc 4 --device 0,1,2,3 --batch-size 4 --max-epoch 100 -- --freeze-backbone --freeze-unet --freeze-counter --resume .weights/drone_rgbt_best_494_781.pth
   ```
 
 - Visualize detection outputs from `best_model.pth`:
   ```bash
   python3 Fine-tune/test_detection_vis.py --data-dir .data/DroneRGBT_counting --ckpt checkpoints/1122-222336/best_model.pth --out ./visuals_detection --num 12
   ```
+
+Flags (forwarded to `Fine-tune/train.py`)
+- `--data-dir`: training data directory
+- `--save-dir`: directory to save models
+- `--lr`: initial learning rate
+- `--resume`: checkpoint path to resume
+- `--device`: CUDA devices (single value or comma-separated)
+- `--crop-size`: input crop size (default 224)
+- `--task`: `counting` | `detection`
+- `--freeze-backbone`: freeze backbone at start
+- `--freeze-counter`: freeze counting/regression head at start
+- `--freeze-unet`: freeze U-Net at start
+- `--unfreeze-epoch`: epoch to unfreeze backbone (-1 = never)
+- `--det-weight`: detection loss weight
+- `--local_rank`: set by torchrun; no need to pass manually
+- `--det-patience`: validation patience for detection AP early stopping
+- `--weight-decay`: optimizer weight decay
+- `--max-model-num`: maximum number of checkpoints to keep
+- `--max-epoch`: max training epochs
+- `--val-epoch`: validation frequency (in epochs)
+- `--val-start`: epoch to start validation
+- `--save-all-best`: keep multiple best checkpoints
+- `--batch-size`: train batch size
+- `--num-workers`: dataloader workers
+- `--downsample-ratio`: model output stride for targets
+- `--wot`: OT loss weight
+- `--wtv`: TV loss weight
+- `--reg`: Sinkhorn entropy regularization
+- `--num-of-iter-in-ot`: Sinkhorn iterations
+- `--norm-cood`: normalize coordinates in distance
+- `--wrd`: regional density loss weight
+
+Note: `tools/train_entry.sh` accepts the same flags after `--` and safely forwards them to `Fine-tune/train.py`. Before `--`, you can set launcher options like `--nproc` and `--device`.
 
 Notes
 - This fork is intended for experimentation and reproducibility for a final year project. Refer to `.plan/` for design rationale, test results, and reproducibility notes.

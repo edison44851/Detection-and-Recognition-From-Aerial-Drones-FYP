@@ -15,7 +15,7 @@ def gaussian2d(shape, sigma=1):
     return h
 
 
-class DroneRGBTDetectionDataset(Dataset):
+class DetectionDataset(Dataset):
     """Detection dataset that reads `*_RGB.jpg`, `*_T.jpg`, and `*_GT.npy` files.
 
     Generates heatmap, size and offset targets on the fly. By default the head
@@ -104,6 +104,6 @@ class DroneRGBTDetectionDataset(Dataset):
 
 if __name__ == '__main__':
     # simple smoke test
-    ds = DroneRGBTDetectionDataset(root='.data/DroneRGBT_counting', split='train')
+    ds = DetectionDataset(root='.data/DroneRGBT_counting', split='train')
     s = ds[0]
     print('rgb', s['rgb'].shape, 'heatmap', s['heatmap'].shape, 'size', s['size'].shape)

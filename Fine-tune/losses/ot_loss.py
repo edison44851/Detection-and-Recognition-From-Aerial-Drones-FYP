@@ -30,6 +30,16 @@ class OT_Loss(Module):
             self.cood_y = self.cood_y / float(self.c_h) * 2 - 1
         self.output_h = self.cood_y.size(1)
         self.output_w = self.cood_x.size(1)
+        # keep a canonical c_size representation and output_size for compatibility
+        # when downstream code expects `self.c_size` and `self.output_size` (used in set_grid)
+        if self.c_h == self.c_w:
+            self.c_size = float(self.c_w)
+        else:
+            # store as tensor [W, H] to allow broadcasting with point coords [N,2]
+            self.c_size = torch.tensor([float(self.c_w), float(self.c_h)], device=self.device)
+        # output_size kept for legacy code paths that expect a single integer (square case)
+        self.output_size = self.output_w
+        self.density_size = self.output_w
 
 
     def forward(self, normed_density, unnormed_density, points, image_size=None):
@@ -87,7 +97,8 @@ class OT_Loss(Module):
                     logging.warning('sinkhorn assertion: num_points=%s, source_prob_shape=%s, dis_shape=%s', len(im_points), tuple(source_prob.shape), tuple(dis.shape))
                     raise
                 beta = log['beta'] # size is the same as source_prob: [#cood * #cood]
-                ot_obj_values = ot_obj_values + torch.sum(normed_density[idx] * beta.view([1, self.output_size, self.output_size]))
+                # beta corresponds to flattened [H * W] grid; reshape using (output_h, output_w)
+                ot_obj_values = ot_obj_values + torch.sum(normed_density[idx] * beta.view([1, self.output_h, self.output_w]))
                 # compute the gradient of OT loss to predicted density (unnormed_density).
                 # im_grad = beta / source_count - < beta, source_density> / (source_count)^2
                 source_density = unnormed_density[idx][0].view([-1]).detach()

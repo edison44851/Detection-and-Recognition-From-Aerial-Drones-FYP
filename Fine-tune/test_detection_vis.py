@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""
-Run detection inference on several random samples and save visualization images.
+"""Run detection inference on several random samples and save visualization images.
 
 Saves visualizations to `./visuals_detection` by default. Uses the dataset loader
-`DroneRGBTDetectionDataset` and expects a model checkpoint path. The script will
+`DetectionDataset` and expects a model checkpoint path. The script will
 load the checkpoint into `DetectionModel` if available, otherwise try to load into
 `Swin_BM_RGBT` as a fallback.
 
@@ -19,9 +18,9 @@ import torch
 import numpy as np
 import cv2
 
-from datasets.dm_detection import DroneRGBTDetectionDataset
-from models.detection.det_model import DetectionModel
+from datasets.dm_detection import DetectionDataset
 from models.counting.swin_unet import Swin_BM_RGBT
+from models.detection.center_head import CenterHead
 from utils.detection_eval import heatmap_peaks
 
 
@@ -69,7 +68,7 @@ def preprocess_image(tensor_img):
 def infer_and_visualize(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    ds = DroneRGBTDetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio)
+    ds = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio)
     N = len(ds)
     ids = list(range(N))
     random.seed(args.seed)
@@ -77,28 +76,28 @@ def infer_and_visualize(args):
     sel = ids[:args.num]
 
     # load model
-    model = None
+    # Instantiate the backbone and attach a detection head that will use the
+    # U-Net RGB-T fusion. Load whatever keys the checkpoint contains (backbone,
+    # unet, reg_layer, det_head if present) permissively.
+    model = Swin_BM_RGBT(pre_train=False)
+    det_head = CenterHead(in_channels=768)
     try:
-        model = DetectionModel(backbone_pretrained=False)
-        ckpt = torch.load(args.ckpt, map_location=device)
-        # try loading into module state dict structure
-        try:
-            model.load_state_dict(ckpt if isinstance(ckpt, dict) and 'model_state_dict' not in ckpt else ckpt.get('model_state_dict', ckpt), strict=False)
-        except Exception:
-            # permissive load
-            model.load_state_dict(ckpt if isinstance(ckpt, dict) and 'model_state_dict' not in ckpt else ckpt.get('model_state_dict', ckpt), strict=False)
-        model.to(device)
-        model.eval()
+        model.attach_det_head(det_head)
     except Exception:
-        # fallback: try loading as Swin_BM_RGBT
-        model = Swin_BM_RGBT(pre_train=False)
-        ckpt = torch.load(args.ckpt, map_location=device)
+        model.det_adaptor = getattr(model, 'det_adaptor', nn.Identity())
+        model.det_head = det_head
+
+    ckpt = torch.load(args.ckpt, map_location=device)
+    # permissive load into model (will ignore missing keys)
+    try:
+        model.load_state_dict(ckpt if isinstance(ckpt, dict) and 'model_state_dict' not in ckpt else ckpt.get('model_state_dict', ckpt), strict=False)
+    except Exception:
         try:
             model.load_state_dict(ckpt, strict=False)
         except Exception:
             pass
-        model.to(device)
-        model.eval()
+    model.to(device)
+    model.eval()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +147,7 @@ def infer_and_visualize(args):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data-dir', required=True)
-    parser.add_argument('--ckpt', default='checkpoints/1122-222336/best_model.pth')
+    parser.add_argument('--ckpt', default='')
     parser.add_argument('--out', default='visuals_detection')
     parser.add_argument('--num', type=int, default=8)
     parser.add_argument('--seed', type=int, default=42)

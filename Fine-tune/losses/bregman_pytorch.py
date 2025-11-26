@@ -148,24 +148,25 @@ def sinkhorn_knopp(a, b, C, reg=1e-1, maxIter=1000, stopThr=1e-9,
         u = torch.ones(na, dtype=a.dtype).to(device) / na
         v = torch.ones(nb, dtype=b.dtype).to(device) / nb
 
-    K = torch.empty(C.shape, dtype=C.dtype).to(device)
-    torch.div(C, -reg, out=K)
-    torch.exp(K, out=K)
+    # compute K = exp(C / -reg)
+    K = torch.div(C, -reg)
+    K = torch.exp(K).to(device)
 
     b_hat = torch.empty(b.shape, dtype=C.dtype).to(device)
 
     it = 1
     err = 1
 
-    # allocate memory beforehand
-    KTu = torch.empty(v.shape, dtype=v.dtype).to(device)
-    Kv = torch.empty(u.shape, dtype=u.dtype).to(device)
+    # placeholders for intermediate results (avoid out= calls that may resize)
+    KTu = None
+    Kv = None
 
     while (err > stopThr and it <= maxIter):
         upre, vpre = u, v
-        torch.matmul(u, K, out=KTu)
+        # matrix-vector products (avoid out= to prevent resizing warnings)
+        KTu = torch.matmul(u, K)
         v = torch.div(b, KTu + M_EPS)
-        torch.matmul(K, v, out=Kv)
+        Kv = torch.matmul(K, v)
         u = torch.div(a, Kv + M_EPS)
 
         if torch.any(torch.isnan(u)) or torch.any(torch.isnan(v)) or \
@@ -286,21 +287,24 @@ def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
     def update_K(alpha, beta):
         """log space computation"""
         """memory efficient"""
-        torch.add(alpha.reshape(-1, 1), beta.reshape(1, -1), out=K)
-        torch.add(K, -C, out=K)
-        torch.div(K, reg, out=K)
-        torch.exp(K, out=K)
+        # K = exp((alpha + beta - C) / reg)
+        K.copy_(torch.add(alpha.reshape(-1, 1), beta.reshape(1, -1)))
+        K.add_(-C)
+        K.div_(reg)
+        K.copy_(torch.exp(K))
 
     def update_P(alpha, beta, u, v, ab_updated=False):
         """log space P (gamma) computation"""
-        torch.add(alpha.reshape(-1, 1), beta.reshape(1, -1), out=P)
-        torch.add(P, -C, out=P)
-        torch.div(P, reg, out=P)
+        # P = exp((alpha + beta - C) / reg + log u + log v)
+        P.copy_(torch.add(alpha.reshape(-1, 1), beta.reshape(1, -1)))
+        P.add_(-C)
+        P.div_(reg)
         if not ab_updated:
-            torch.add(P, torch.log(u + M_EPS).reshape(-1, 1), out=P)
-            torch.add(P, torch.log(v + M_EPS).reshape(1, -1), out=P)
-        torch.exp(P, out=P)
+            P.add_(torch.log(u + M_EPS).reshape(-1, 1))
+            P.add_(torch.log(v + M_EPS).reshape(1, -1))
+        P.copy_(torch.exp(P))
 
+    # preallocate K buffer and initialize
     K = torch.empty(C.shape, dtype=C.dtype).to(device)
     update_K(alpha, beta)
 
@@ -310,16 +314,16 @@ def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
     err = 1
     ab_updated = False
 
-    # allocate memory beforehand
-    KTu = torch.empty(v.shape, dtype=v.dtype).to(device)
-    Kv = torch.empty(u.shape, dtype=u.dtype).to(device)
+    # placeholders for intermediates (we'll assign results directly)
+    KTu = None
+    Kv = None
     P = torch.empty(C.shape, dtype=C.dtype).to(device)
 
     while (err > stopThr and it <= maxIter):
         upre, vpre = u, v
-        torch.matmul(u, K, out=KTu)
+        KTu = torch.matmul(u, K)
         v = torch.div(b, KTu + M_EPS)
-        torch.matmul(K, v, out=Kv)
+        Kv = torch.matmul(K, v)
         u = torch.div(a, Kv + M_EPS)
 
         ab_updated = False

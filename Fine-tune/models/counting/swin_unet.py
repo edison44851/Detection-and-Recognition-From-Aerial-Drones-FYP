@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 from typing import Optional
+import os
 from models.distillation.unet_cross_att import U_Net
 import logging
 
@@ -696,23 +697,51 @@ class Swin_BM_RGBT(nn.Module):
             nn.Conv2d(128, 1, 1)
         )
 
-        if pre_train:
-            # 初始化
-            # MoCo Init
-            logging.info("Backbone Init:")
-            backbone_weight = OrderedDict(list(torch.load(net_ppca_path)['model_state_dict'].items())[2:185])
-            backbone_weight = OrderedDict((key.replace('moco.encoder_q.', ''), value) for key, value in backbone_weight.items())
-            logging.info(self.backbone.load_state_dict(backbone_weight))
+        # Detection adaptor and placeholder head.
+        # `det_adaptor` maps fused UNet/backbone features to the detection head input channels.
+        # By default it's identity so attaching a head with matching channels is trivial.
+        self.det_adaptor = nn.Identity()
+        self.det_head = None
 
-            logging.info("Reg Layer Init:")
-            reg_weight = OrderedDict(list(torch.load(bm_path).items())[-6:])
-            reg_weight = OrderedDict((key.replace('reg.', ''), value) for key, value in reg_weight.items())
-            logging.info(self.reg_layer.load_state_dict(reg_weight))
-            
-            logging.info("U-Net Init:")
-            unet_weight = OrderedDict(list(torch.load(bm_path).items())[40:102])
-            unet_weight = OrderedDict((key.replace('unet.', ''), value) for key, value in unet_weight.items())
-            logging.info(self.unet.load_state_dict(unet_weight))
+        if pre_train:
+            # Attempt to load pretrained weights if paths are configured and files exist.
+            # This is permissive: if paths are empty or files missing the model will continue
+            # with randomly initialized weights and a clear log message will be emitted.
+            try:
+                if net_ppca_path and os.path.exists(net_ppca_path):
+                    logging.info("Backbone Init: loading %s", net_ppca_path)
+                    backbone_checkpoint = torch.load(net_ppca_path)
+                    if 'model_state_dict' in backbone_checkpoint:
+                        state_items = list(backbone_checkpoint['model_state_dict'].items())
+                    else:
+                        state_items = list(backbone_checkpoint.items())
+                    backbone_weight = OrderedDict(state_items[2:185])
+                    backbone_weight = OrderedDict((key.replace('moco.encoder_q.', ''), value) for key, value in backbone_weight.items())
+                    logging.info(self.backbone.load_state_dict(backbone_weight))
+                else:
+                    logging.info('Backbone Init: no pretrained backbone found (%s). Skipping.', net_ppca_path)
+
+                if bm_path and os.path.exists(bm_path):
+                    logging.info("Reg/UNet Init: loading %s", bm_path)
+                    bm_checkpoint = torch.load(bm_path)
+                    # reg_layer weights
+                    try:
+                        reg_weight = OrderedDict(list(bm_checkpoint.items())[-6:])
+                        reg_weight = OrderedDict((key.replace('reg.', ''), value) for key, value in reg_weight.items())
+                        logging.info(self.reg_layer.load_state_dict(reg_weight))
+                    except Exception:
+                        logging.warning('Reg layer weights not found or failed to load from %s', bm_path)
+                    # unet weights
+                    try:
+                        unet_weight = OrderedDict(list(bm_checkpoint.items())[40:102])
+                        unet_weight = OrderedDict((key.replace('unet.', ''), value) for key, value in unet_weight.items())
+                        logging.info(self.unet.load_state_dict(unet_weight))
+                    except Exception:
+                        logging.warning('U-Net weights not found or failed to load from %s', bm_path)
+                else:
+                    logging.info('Reg/UNet Init: no pretrained bm weights found (%s). Skipping.', bm_path)
+            except Exception as e:
+                logging.warning('Pretrain weight loading failed with exception: %s. Continuing with random init.', repr(e))
 
     def forward(self, rgb, t, return_feats: bool = False):
         """Forward.
@@ -726,9 +755,52 @@ class Swin_BM_RGBT(nn.Module):
         r, t = self.backbone(rgb), self.backbone(t)
         features = r + t + b
         density = torch.abs(self.reg_layer(features / 3))
+
+        # If a detection head has been attached to this module, use the UNet-fused
+        # backbone output `b` (which contains RGB-T fusion) as the input to the
+        # detection adaptor + head. This allows loading original Swin_BM_RGBT
+        # weights (including U-Net fusion) and freezing them while training only
+        # the adaptor or head.
+        if getattr(self, 'det_head', None) is not None:
+            # adapted features come from the fused UNet path
+            adapted_feats = self.det_adaptor(b)
+            try:
+                heat, size, offset = self.det_head(adapted_feats)
+            except Exception:
+                # If head returns a tuple differently, try to unpack
+                out = self.det_head(adapted_feats)
+                if isinstance(out, tuple) and len(out) >= 3:
+                    heat, size, offset = out[0], out[1], out[2]
+                else:
+                    heat, size, offset = out, None, None
+
+            if return_feats:
+                return density, (heat, size, offset), adapted_feats
+            return density, (heat, size, offset)
+
         if return_feats:
             return density, features
         return density
+
+    def attach_det_head(self, head: nn.Module, adaptor: nn.Module = None):
+        """Attach a detection head and optional adaptor to this model.
+
+        The adaptor maps fused UNet/backbone features to the head's expected
+        input channels. If `adaptor` is None, the existing `det_adaptor` is used.
+        """
+        if adaptor is not None:
+            self.det_adaptor = adaptor
+        self.det_head = head
+
+    def get_unet_features_for_detection(self, rgb, t):
+        """Return adapted UNet-fused features suitable for the detection head.
+
+        This uses the same fused UNet -> backbone path as the detection forward
+        and applies the `det_adaptor` so the returned tensor is ready for the head.
+        """
+        b = self.backbone(self.unet(rgb, t))
+        adapted = self.det_adaptor(b)
+        return adapted
 
     def get_backbone_features(self, x):
         """Return backbone features for a single-modality input x."""

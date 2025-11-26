@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument('--crop-size', type=int, default=224,
                         help='default 224')
     parser.add_argument('--task', type=str, default='counting',
-                        help='task to run: counting | detection | multi')
+                        help='task to run: counting | detection')
     parser.add_argument('--freeze-backbone', action='store_true',
                         help='freeze backbone at start of training')
     parser.add_argument('--freeze-counter', action='store_true',
@@ -33,12 +33,6 @@ def parse_args():
                         help='local rank for distributed training (set by torchrun)')
     parser.add_argument('--det-patience', type=int, default=10,
                         help='patience (in validation epochs) for detection AP early stopping')
-    parser.add_argument('--save-by', type=str, default='count', choices=['count','det','multi','combined'],
-                        help='Which metric to use for saving best model')
-    parser.add_argument('--combined-alpha', type=float, default=1.0,
-                        help='alpha weight for AP in combined score (AP normalized)')
-    parser.add_argument('--combined-beta', type=float, default=1.0,
-                        help='beta weight for GAME0 in combined score (GAME0 normalized)')
 
     # default
     parser.add_argument('--weight-decay', type=float, default=1e-4,

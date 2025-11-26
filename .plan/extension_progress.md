@@ -1,3 +1,29 @@
+# Extension Progress — 2025-11-25
+
+**Summary**
+- **Scope:** Extended Free-Lunch (crowd counting) with a center-based detection branch, detection dataset targets, detection evaluation, and trainer improvements. Recently completed major code refactoring for maintainability and simplified task separation.
+- **Status:** Detection branch fully implemented and tested; trainer refactored into modular components; multi-task support removed for simplicity. All changes validated with multi-GPU distributed training. Core changes live under the `Fine-tune/` subtree.
+
+**Recent changes (2025-11-25)**
+- **Major refactoring:** Reorganized `dm_regression_trainer.py` from monolithic 1000+ line code into clean, focused helper methods (~20 new methods) for better maintainability:
+  - Setup phase: `_setup_distributed()`, `_setup_datasets()`, `_create_model()`, `_load_checkpoint()`, `_freeze_model_components()`, `_create_optimizer()`, etc.
+  - Training phase: `_prepare_batch()`, `_compute_counting_losses()`, `_compute_detection_losses()`
+  - Evaluation phase: `_evaluate_counting_sample()`, `_evaluate_detection_sample()`, `_compute_game_metrics()`, `_should_save_best_model()`
+- **Simplified task model:** Removed "multi" task type to eliminate complexity:
+  - **Detection task:** Uses ONLY detection losses (heatmap BCE, size/offset L1). No counting losses computed.
+  - **Counting task:** Uses ONLY counting losses (OT, count, TV, RD). No detection losses computed.
+  - Forward pass simplified from 3 branches to 2 clean branches.
+- **Removed complexity:**
+  - Eliminated `'multi'` task type (previously mixed counting + detection)
+  - Removed `'combined'` saving strategy (α·AP - β·GAME0)
+  - Kept only `'det'` (save by AP) and `'count'` (save by GAME0) strategies
+- **Verification:** Multi-GPU (4 GPUs) distributed training tested successfully with refactored code:
+  - Checkpoint loading: 0 missing/unexpected keys ✓
+  - Freeze flags working correctly (16 trainable tensors for detection head only) ✓
+  - Detection AP improving over epochs (0.0017 → 0.0071, 4x improvement) ✓
+  - Detection loss decreasing (31227 → 12657, 59% reduction) ✓
+  - Counting GAME0 stable across epochs (~549, frozen weights working) ✓
+
 # Extension Progress — 2025-11-23
 
 **Summary**

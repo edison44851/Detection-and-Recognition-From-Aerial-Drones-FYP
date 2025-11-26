@@ -11,11 +11,11 @@
 set -euo pipefail
 
 DATA_DIR=".data/DroneRGBT_counting"
-SAVE_DIR="./ckpt_verify"
+SAVE_DIR="./checkpoints"
 NPROC=4
 DEVICE="0,1,2,3"
 BATCH_SIZE=1
-MAX_EPOCH=1
+MAX_EPOCH=100
 DET_WEIGHT=1.0
 EXTRA_ARGS=""
 
@@ -77,7 +77,6 @@ CMD=(torchrun --nproc_per_node=${NPROC} Fine-tune/train.py
      --batch-size "${BATCH_SIZE}"
      --max-epoch "${MAX_EPOCH}"
      --det-weight "${DET_WEIGHT}"
-     --save-by det
      --device "${DEVICE}")
 
 if [[ -n "$EXTRA_ARGS" ]]; then
