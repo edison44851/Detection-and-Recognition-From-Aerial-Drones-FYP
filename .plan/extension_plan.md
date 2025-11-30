@@ -115,3 +115,49 @@ These changes are backwards-compatible: all visualization and diagnostics featur
 - **Tiling support & SAHI options:** `--tile-size` and `--tile-overlap` allow tiled inference to recover small objects; `test_detection_vis.py` and the diagnostics wrapper support these flags.
 
 These additions give flexible, opt-in controls to experiment with detection losses and evaluation without changing counting behavior.
+
+---
+
+## Proposed Architecture Improvements (2025-11-30)
+
+- Lightweight neck + multi-scale head outputs
+	- What: Insert a tiny neck (depthwise separable convs + GroupNorm + SiLU) to produce features at strides 4 and 8, feed both to the head, and merge outputs during evaluation.
+	- Files: `Fine-tune/models/detection/center_head.py`, `Fine-tune/models/detection/det_model.py`, `Fine-tune/models/counting/swin_unet.py` (expose P4/P8 features).
+	- Flags: `--use-neck dwsep_gn`, `--multi-scale-head true`, `--strides 4,8`, `--merge-scales true`.
+	- Potential impact: Precision increases for tiny aerial targets; slight FP growth if thresholds not tuned; small parameter/runtime overhead.
+	- References: FPN (Lin et al. 2017), PANet (Liu et al. 2018), BiFPN / EfficientDet (Tan et al. 2020), MobileNet depthwise separable convs (Howard et al. 2017), SiLU/Swish (Ramachandran et al. 2017).
+
+- Centerness branch (FCOS-like score calibration)
+	- What: Add a 1-channel centerness branch; compute final score as `sigmoid(heatmap) * sigmoid(centerness)`; train centerness with BCE/focal targets from geometry.
+	- Files: `center_head.py` (add `centerness_head`), trainer loss wiring, `det_model.py` decode.
+	- Flags: `--use-centerness true`, `--centerness-weight 1.0`, `--score-mode heatmap_centerness`.
+	- Potential impact: False positives reduced by penalizing off-center peaks; recall may dip if targets are noisy for very small boxes.
+	- References: FCOS (Tian et al. 2019) centerness formulation; CenterNet (Zhou et al. 2019) heatmap peak concepts.
+
+- Quality/IoU branch + Varifocal/QFL
+	- What: Predict an IoU/quality score per detection; train with Varifocal/QFL and use quality-calibrated scores at inference (`score = heatmap * quality`).
+	- Files: `center_head.py` (add `quality_head`), `Fine-tune/losses/varifocal.py` (new), trainer IoU target computation, `det_model.py` post-process.
+	- Flags: `--use-quality true`, `--quality-loss varifocal`, `--quality-weight 0.5`, `--enable-quality-after-epochs 5`.
+	- Potential impact: Better score calibration and fewer FPs at same recall; extra compute to form IoU targets; enable after warmup for stability.
+	- References: Varifocal Loss (Zhang et al. 2021), GFocal (Li et al. 2020), PP-YOLOE (Xu et al. 2022), Task-Aligned Label Assignment (Wang et al. 2021).
+
+- Deformable conv in head (optional)
+	- What: Replace the first head conv with `DeformConv2d` to improve localization of small, off-grid centers.
+	- Files: `center_head.py` (conditional block).
+	- Flags: `--deform-head true`.
+	- Potential impact: Localization improves; minor runtime increase; requires CUDA kernels.
+	- References: Deformable ConvNets v1 (Dai et al. 2017), Deformable ConvNets v2 (Zhu et al. 2019).
+
+- Cross-attention RGB–Thermal fusion (lightweight)
+	- What: Insert a small cross-attention block between RGB and Thermal features at stride 4 before the head to improve modality alignment.
+	- Files: `swin_unet.py` (fusion block), `det_model.py` (fusion routing).
+	- Flags: `--fusion cross_att`, `--fusion_depth 1`.
+	- Potential impact: Precision gain via reduced modality mismatch; increased complexity; keep block tiny for stability.
+	- References: Transformer attention (Vaswani et al. 2017), RGB-T object detection survey (e.g., Wu et al. 2020), MFNet (Choi et al. 2018) multimodal fusion concepts.
+
+- Post-process/NMS refinements
+	- What: Per-level top-K, global NMS merge across scales, tuned radius-NMS/soft-NMS, and threshold scheduling for better precision.
+	- Files: `Fine-tune/utils/detection_eval.py`, `Fine-tune/test_detection_vis.py` (options).
+	- Flags: `--topk-per-level 300`, `--eval-nms-radius 2`, `--eval-soft-nms-sigma 0.5`, `--max-dets 200`.
+	- Potential impact: FPs decrease with calibrated thresholds/NMS; aggressive settings may reduce recall.
+	- References: Soft-NMS (Bodla et al. 2017), SAHI tiling (Ulku et al. 2022), CenterNet radius suppression (Zhou et al. 2019).

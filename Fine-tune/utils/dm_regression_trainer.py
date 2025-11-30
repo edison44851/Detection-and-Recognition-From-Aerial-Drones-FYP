@@ -169,7 +169,7 @@ class RegTrainer(Trainer):
         args = self.args
         
         if args.task == 'detection':
-            from models.detection.center_head import CenterHead
+            from models.detection.det_model import DetectionHeadWrapper
             self.model = Swin_BM_RGBT(pre_train=False)
             # Optionally add a lightweight adaptor to map fused features to head input
             if getattr(args, 'use_det_adaptor', False):
@@ -198,8 +198,10 @@ class RegTrainer(Trainer):
                 except Exception as e:
                     logging.warning('Failed to initialize det_adaptor: %s', repr(e))
             # Defer detection head attachment until after checkpoint loading
-            self._deferred_det_head = CenterHead(in_channels=768, use_logits=getattr(args, 'use_bce_logits', False),
-                                                 use_gn=getattr(args, 'det_use_gn', False))
+            self._deferred_det_head = DetectionHeadWrapper(in_channels=768, hidden=256)
+            # Pass use_logits and use_gn to the underlying CenterHead
+            self._deferred_det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
+            self._deferred_det_head.head.use_gn = getattr(args, 'det_use_gn', False)
         else:
             self.model = Swin_BM_RGBT()
         
