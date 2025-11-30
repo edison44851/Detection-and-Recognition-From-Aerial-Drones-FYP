@@ -85,3 +85,33 @@ Below are concrete, actionable improvements grouped by area. Each bullet include
 - Add `tools/convert_checkpoint_for_inference.py` to strip optimizer/AMP state for smaller models used in inference.
 - Keep `README.md` and `Fine-tune/README.md` updated with example commands and troubleshooting tips (OOM, checkpoint mismatches).
 - Add pre-commit formatting and linting config (black/isort/ruff) and document code style in a CONTRIBUTING.md.
+
+---
+
+# Recent updates (2025-11-30)
+
+- Visualization & diagnostics:
+	- `Fine-tune/test_detection_vis.py` now supports `--indices-file` so multiple invocations can process the exact same images for fair comparisons (raw / tiled / orig modes).
+	- The script writes `selected_indices.txt` when it performs a random selection and deduplicates by dataset `id` to avoid saving the same image multiple times.
+	- Outputs per-run `scores.csv` and `scores.png` (TP/FP score histograms) to aid threshold selection and score calibration analysis.
+
+- Post-train wrapper:
+	- `tools/run_posttrain_diagnostics.sh` updated to reuse the `raw/selected_indices.txt` file and pass it to the `tiles` and `orig` visualization runs so all three modes generate comparable outputs.
+
+- Trainer & early stopping:
+	- The trainer (`Fine-tune/utils/dm_regression_trainer.py`) received a small fix so, when no validation split exists, test-set AP can drive early stopping (useful for experiments where a held-out test set is available but no val split).
+
+These changes are backwards-compatible: all visualization and diagnostics features are opt-in and controlled by flags. The `--indices-file` option is the recommended way to get reproducible post-train comparisons.
+
+### Detection training & loss options added
+
+- **Focal loss support:** An logits-compatible focal implementation can be enabled with `--use-focal-heatmap` and tuned via `--focal-alpha` / `--focal-gamma` to reduce negative impact of abundant background pixels.
+- **BCEWithLogits / logits compatibility:** `--use-bce-logits` ensures the head outputs raw logits and the loss uses `BCEWithLogitsLoss` where appropriate (avoids applying sigmoid twice).
+- **GroupNorm in head:** Toggle `--det-use-gn` to replace BatchNorm with GroupNorm inside detection head/adaptor for small-batch training stability.
+- **Positive weighting & hard-negative mining:** `--det-pos-weight` and `--det-neg-topk-ratio` control positive-class weighting and negative sampling to address class imbalance in the heatmap target.
+- **Head LR & optimizer param-groups:** `--head-lr` configures a separate learning-rate for detection head parameters via an optimizer param-group.
+- **IoU-size loss:** Optional IoU-based size loss can be enabled (`--use-iou-size`, `--iou-weight`) to improve predicted box-size consistency.
+- **Eval post-processing:** Soft-NMS and radius NMS (`--eval-soft-nms-sigma`, `--eval-nms-radius`) and `--max-dets` / top-K are available for evaluation-time filtering.
+- **Tiling support & SAHI options:** `--tile-size` and `--tile-overlap` allow tiled inference to recover small objects; `test_detection_vis.py` and the diagnostics wrapper support these flags.
+
+These additions give flexible, opt-in controls to experiment with detection losses and evaluation without changing counting behavior.

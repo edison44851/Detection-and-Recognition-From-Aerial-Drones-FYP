@@ -11,6 +11,11 @@ Core differences and major changelog
 - Added helper scripts for launching distributed runs (`tools/run_torchrun_train_detector.sh`) and quick dry-run checks (`tools/quick_train_check.py`).
 - DDP improvements: when large parameter subsets are frozen, `find_unused_parameters=True` is toggled to avoid NCCL reduction errors.
 
+- Diagnostics & visualization improvements:
+  - `Fine-tune/test_detection_vis.py` now supports a reproducible `--indices-file` to force identical image selections across multiple runs, writes `selected_indices.txt` when performing random selection, and deduplicates by dataset-provided image id to avoid repeated visualizations.
+  - `tools/run_posttrain_diagnostics.sh` (post-train diagnostics wrapper) has been updated to reuse the `raw/selected_indices.txt` file so the `raw`, `tiles`, and `orig` visualizations process the same images for fair comparison.
+  - The visualization tool produces per-prediction CSV (`scores.csv`) and TP/FP histograms (`scores.png`) for easy score-threshold analysis.
+
 Where to find details
 - Implementation notes, tests, quick-run logs and discussion are collected under the `.plan/` directory. Start with `.plan/extension_progress.md` for a short status and next actions.
 
@@ -31,6 +36,25 @@ We strongly recommend using the convenience launcher `tools/train_entry.sh` for 
   ```bash
   python3 Fine-tune/test_detection_vis.py --data-dir .data/DroneRGBT_counting --ckpt checkpoints/1122-222336/best_model.pth --out ./visuals_detection --num 12
   ```
+
+- Run post-training diagnostics (produces `raw/`, `tiles/`, `orig/` subfolders with overlays, `report.txt`, `scores.csv`, and `scores.png`):
+  ```bash
+  tools/run_posttrain_diagnostics.sh --data-dir .data/DroneRGBT_counting --ckpt checkpoints/1130-171113/best_model.pth --out tmp_posttrain_1130-171113 --num 64
+  ```
+
+
+Detection training options & losses (high level)
+- **Heatmap losses:** Supports `bce` and `focal` (logits-compatible focal implementation available). Use `--use-focal-heatmap`, `--focal-alpha`, `--focal-gamma` to enable and tune focal loss for sparse heatmaps.
+- **BCE/logits handling:** The trainer and head support `--use-bce-logits` so targets and losses are aligned (BCEWithLogits-friendly outputs) to avoid double-sigmoid mismatches.
+- **GroupNorm / Head normalization:** Detection head and adaptor can use GroupNorm via `--det-use-gn` to improve small-batch stability for the detection head.
+- **Positive class weighting:** Configure `--det-pos-weight` to upweight positive heatmap pixels and mitigate class imbalance between sparse positives and abundant negatives.
+- **Hard-negative mining:** Optional hard-negative mining / top-k negative sampling (`--det-neg-topk-ratio`) is available to reduce negative domination of BCE losses.
+- **IoU / size losses:** Optional IoU-size loss is supported for predicted sizes (`--use-iou-size` and `--iou-weight`) to improve box-size consistency beyond L1.
+- **Head learning-rate & param-groups:** The trainer creates a head-specific param-group so you can set a higher `--head-lr` for the detection head while keeping the backbone/U-Net LR lower.
+- **Score calibration & postprocess:** Eval-time NMS/soft-NMS and configurable radius NMS are available (`--eval-nms`, `--eval-soft-nms-sigma`, `--eval-nms-radius`) plus top-K filtering to reduce false positives.
+- **Tiled/SAHI-style inference:** The visualization and inference scripts support tiling parameters (`--tile-size`, `--tile-overlap`) to recover small or cropped detections.
+
+All detection changes are opt-in and controlled by CLI flags so counting-only experiments are unchanged unless you enable detection flags.
 
 Flags (forwarded to `Fine-tune/train.py`)
 - `--data-dir`: training data directory

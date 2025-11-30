@@ -58,24 +58,77 @@ def sinkhorn(a, b, C, reg=1e-1, method='sinkhorn', maxIter=1000, tau=1e3,
 
     """
 
-    if method.lower() == 'sinkhorn':
-        return sinkhorn_knopp(a, b, C, reg, maxIter=maxIter,
-                              stopThr=stopThr, verbose=verbose, log=log,
-                              warm_start=warm_start, eval_freq=eval_freq, print_freq=print_freq,
-                              **kwargs)
-    elif method.lower() == 'sinkhorn_stabilized':
-        return sinkhorn_stabilized(a, b, C, reg, maxIter=maxIter, tau=tau,
-                                   stopThr=stopThr, verbose=verbose, log=log,
-                                   warm_start=warm_start, eval_freq=eval_freq, print_freq=print_freq,
-                                   **kwargs)
-    elif method.lower() == 'sinkhorn_epsilon_scaling':
-        return sinkhorn_epsilon_scaling(a, b, C, reg,
-                                        maxIter=maxIter, maxInnerIter=100, tau=tau,
-                                        scaling_base=0.75, scaling_coef=None, stopThr=stopThr,
-                                        verbose=False, log=log, warm_start=warm_start, eval_freq=eval_freq,
-                                        print_freq=print_freq, **kwargs)
+    # Always try the requested solver first. If numerical issues are
+    # detected (NaN/Inf in the transport plan) and the requested solver is
+    # not the stabilized variant, automatically fallback to the
+    # `sinkhorn_stabilized` implementation and return diagnostics in the
+    # log (when enabled).
+
+    chosen = method.lower()
+
+    # helper to call solvers uniformly and return (P, log_dict)
+    def _call_solver(name):
+        if name == 'sinkhorn':
+            res = sinkhorn_knopp(a, b, C, reg, maxIter=maxIter,
+                                 stopThr=stopThr, verbose=verbose, log=True,
+                                 warm_start=warm_start, eval_freq=eval_freq, print_freq=print_freq,
+                                 **kwargs)
+        elif name == 'sinkhorn_stabilized':
+            res = sinkhorn_stabilized(a, b, C, reg, maxIter=maxIter, tau=tau,
+                                      stopThr=stopThr, verbose=verbose, log=True,
+                                      warm_start=warm_start, eval_freq=eval_freq, print_freq=print_freq,
+                                      **kwargs)
+        elif name == 'sinkhorn_epsilon_scaling':
+            res = sinkhorn_epsilon_scaling(a, b, C, reg,
+                                           maxIter=maxIter, maxInnerIter=100, tau=tau,
+                                           scaling_base=0.75, scaling_coef=None, stopThr=stopThr,
+                                           verbose=False, log=True, warm_start=warm_start, eval_freq=eval_freq,
+                                           print_freq=print_freq, **kwargs)
+        else:
+            raise ValueError("Unknown method '%s'." % method)
+
+        # normalize output to (P, log)
+        if isinstance(res, tuple) and len(res) == 2:
+            P, _log = res
+        else:
+            P = res
+            _log = {}
+
+        # ensure log dict exists
+        if _log is None:
+            _log = {}
+
+        _log.setdefault('solver', name)
+        # count NaN/Inf in the plan
+        try:
+            nan_count = int(torch.isnan(P).sum().item())
+            inf_count = int(torch.isinf(P).sum().item())
+        except Exception:
+            nan_count = -1
+            inf_count = -1
+        _log['nan_count'] = nan_count
+        _log['inf_count'] = inf_count
+
+        return P, _log
+
+    P, _log = _call_solver(chosen)
+
+    # If numerical issues found and not already stabilized, fallback
+    if (_log.get('nan_count', 0) > 0 or _log.get('inf_count', 0) > 0) and chosen != 'sinkhorn_stabilized':
+        if verbose:
+            print(f"Numerical issues detected in solver '{chosen}' (NaN={_log['nan_count']}, Inf={_log['inf_count']}). Falling back to 'sinkhorn_stabilized'.")
+        # call stabilized solver and merge diagnostics
+        P_stab, stab_log = _call_solver('sinkhorn_stabilized')
+        # attach fallback info
+        stab_log['fallback_from'] = chosen
+        # prefer stabilized plan
+        P, _log = P_stab, stab_log
+
+    # If caller did not request logs, only return P
+    if not log:
+        return P
     else:
-        raise ValueError("Unknown method '%s'." % method)
+        return P, _log
 
 
 def sinkhorn_knopp(a, b, C, reg=1e-1, maxIter=1000, stopThr=1e-9,

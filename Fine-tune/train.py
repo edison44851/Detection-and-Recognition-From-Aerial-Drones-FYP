@@ -53,6 +53,43 @@ def parse_args():
                         help='the num of training process')
     parser.add_argument('--downsample-ratio', type=int, default=8,
                         help='downsample ratio')
+    # alias for clarity
+    parser.add_argument('--output-stride', type=int, default=None,
+                        help='(alias) output stride / downsample ratio; overrides --downsample-ratio when provided')
+    parser.add_argument('--det-pos-weight', type=float, default=1.0,
+                        help='positive pixel weight for detection heatmap BCE (>=1.0 increases weight on positives)')
+    parser.add_argument('--head-lr', type=float, default=None,
+                        help='learning rate for detection head/adaptor (if set, creates optimizer param group)')
+    parser.add_argument('--ap-dist-thresh', type=float, default=8.0,
+                        help='distance threshold in pixels for AP matching (compute_ap)')
+    parser.add_argument('--use-det-adaptor', action='store_true',
+                        help='create a small 1x1 conv adaptor (det_adaptor) before det_head')
+    parser.add_argument('--use-bce-logits', action='store_true',
+                        help='use BCEWithLogitsLoss and have head output raw logits (no sigmoid)')
+    parser.add_argument('--det-use-gn', action='store_true',
+                        help='use GroupNorm in detection head and adaptor instead of BatchNorm')
+    # Detection tuning flags
+    parser.add_argument('--det-sigma', type=float, default=None,
+                        help='gaussian sigma used to generate heatmaps in DetectionDataset (if provided)')
+    parser.add_argument('--use-focal-heatmap', action='store_true',
+                        help='use focal loss on heatmap (requires logits); alpha/gamma configurable')
+    parser.add_argument('--focal-alpha', type=float, default=0.25,
+                        help='focal loss alpha (class balance)')
+    parser.add_argument('--focal-gamma', type=float, default=2.0,
+                        help='focal loss gamma (focus on hard examples)')
+    parser.add_argument('--det-neg-topk-ratio', type=float, default=None,
+                        help='optional ratio of hardest negative pixels to include in heatmap loss (0-1); if None, include all negatives')
+    parser.add_argument('--use-iou-size', action='store_true',
+                        help='add IoU-based loss for size regression at positive locations')
+    parser.add_argument('--iou-weight', type=float, default=0.5,
+                        help='weight for IoU size loss relative to L1 size loss')
+    # Eval-time NMS options
+    parser.add_argument('--eval-nms', type=str, default=None,
+                        help='optional NMS in evaluation/visualization: radius|soft')
+    parser.add_argument('--eval-nms-radius', type=float, default=4.0,
+                        help='radius (pixels) for radius NMS when eval-nms=radius')
+    parser.add_argument('--eval-soft-nms-sigma', type=float, default=0.5,
+                        help='sigma for Soft-NMS when eval-nms=soft')
                         
     # For DM-Count
     parser.add_argument('--wot', type=float, default=0.1, help='weight on OT loss')
@@ -72,6 +109,9 @@ def parse_args():
 
 if __name__ == '__main__':
     args = parse_args()
+    # if output_stride is provided, use it as downsample ratio
+    if getattr(args, 'output_stride', None) is not None:
+        args.downsample_ratio = args.output_stride
     torch.backends.cudnn.benchmark = True
     # when using torchrun/torch.distributed, LOCAL_RANK is set; otherwise fall back to args.device
     if 'LOCAL_RANK' in os.environ:

@@ -1,3 +1,46 @@
+## Recent fixes & diagnostics (2025-11-30)
+
+- Made visualization deterministic across modes:
+  - `Fine-tune/test_detection_vis.py` now accepts `--indices-file` and writes `selected_indices.txt` when performing selection so multiple runs can be compared exactly.
+  - Added deduplication by dataset image id to avoid repeated visualizations of the same example.
+
+- Post-train diagnostics wrapper:
+  - `tools/run_posttrain_diagnostics.sh` now reuses `raw/selected_indices.txt` and passes it to the `tiles` and `orig` runs so `raw/`, `tiles/`, and `orig/` process identical images.
+
+- Observed diagnostics (run with `checkpoints/1130-171113/best_model.pth` → `tmp_posttrain_1130-171113`):
+  - `raw/report.txt`: Total TP=94 FP=277 FN=1888 (many low-score false positives)
+  - `tiles/report.txt`: Total TP=113 FP=356 FN=1869 (tiling recovered some TP at cost of more FP)
+  - `orig/report.txt`: Total TP=18 FP=12 FN=1964 (very conservative, many FNs)
+  - `raw/scores.csv` produced many low-score predictions (0.01–0.2) and a few high-score false positives — indicating score calibration / target-formation issues remain.
+
+- Trainer change recap:
+  - Early-stopping behavior updated: when validation split is absent, the test-set AP can drive early stopping. This is useful when experiments use a held-out test set for model selection.
+
+Next recommended actions
+- Visual inspection: review high-FP overlay images (e.g., `raw/747.jpg`, `raw/6.jpg`, `raw/983.jpg`) to diagnose cause of confident false positives.
+- Score analysis: compute TP/FP counts by score bin and pick a pragmatic threshold for evaluation; the visualization CSVs make this straightforward.
+- Training fixes to try: re-check heatmap target normalization, switch BCE/BCEWithLogits/focal modes, and tune `det-sigma` and `det-pos-weight` in short experiments.
+
+Detection training & loss features implemented
+- **Focal loss:** Added logits-compatible focal loss option (`--use-focal-heatmap`) with `--focal-alpha` and `--focal-gamma` tuning; used to reduce negative-dominance in sparse heatmaps.
+- **BCEWithLogits / logits flag:** Implemented `--use-bce-logits` to ensure loss/head output compatibility and avoid double-sigmoid problems.
+- **GroupNorm support:** `--det-use-gn` enables GroupNorm in the detection head and adaptor for small-batch stability.
+- **Positive weighting and hard-negative mining:** `--det-pos-weight` and `--det-neg-topk-ratio` are implemented to upweight positives and selectively sample hard negatives.
+- **Head parameter-group & head LR:** The optimizer exposes a separate head param-group so `--head-lr` can be set independently (useful when backbone is frozen or uses a smaller LR).
+- **IoU-size loss:** Optional IoU-based size loss (`--use-iou-size`, `--iou-weight`) is implemented to improve size/scale predictions.
+- **Eval-time NMS & Soft-NMS:** Evaluation supports configurable radius-NMS, soft-NMS and top-K filtering (`--eval-nms-radius`, `--eval-soft-nms-sigma`, `--max-dets`) to reduce FPs at test-time.
+- **Tiled inference (SAHI-like):** Visualization and inference support `--tile-size` and `--tile-overlap` to tile large images and merge detections, which recovered some TP in diagnostics.
+
+Notes from experiments
+- Enabling tiling recovered several additional true positives in the post-train diagnostics, but also increased low-score false positives; score calibration and threshold selection remain high-priority.
+- Focal loss and increased `det-sigma` moved more mass into heatmap positives during training and raised some detection scores, but did not eliminate many low-mid score false peaks — indicating further target/normalization or postprocess tuning is needed.
+
+Next steps
+- Run short targeted sweeps: focal gamma (0.5–2.0), det-pos-weight (1–10), det-sigma (1–3) with head-only training to find stable settings.
+- Produce TP/FP score histograms per-run (I can generate plots from `scores.csv`) and suggest an operating threshold for evaluation and visualization.
+
+---
+
 # Extension Progress — 2025-11-25
 
 **Summary**
@@ -81,9 +124,6 @@
 For implementation details, tests, and command examples see the markdowns in the `.plan/` directory.
 
 ---
-
-**Log**: updated 2025-11-23 to reflect detection integration, trainer fixes (freeze flag disambiguation, early-stop), visualization tooling, and recent quick runs.
-
 
 # Extension Progress — 2025-11-22
 

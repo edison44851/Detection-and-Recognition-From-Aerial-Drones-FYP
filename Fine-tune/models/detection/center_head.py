@@ -13,10 +13,19 @@ class CenterHead(nn.Module):
       - offset: [B,2,H,W]
     """
 
-    def __init__(self, in_channels=768, hidden=256):
+    def __init__(self, in_channels=768, hidden=256, use_logits: bool = False, use_gn: bool = False):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, hidden, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(hidden)
+        # Use GroupNorm when requested (more stable for small batch sizes)
+        if use_gn:
+            # choose a group count that divides hidden
+            for g in (32, 16, 8, 4, 2, 1):
+                if hidden % g == 0:
+                    gn_groups = g
+                    break
+            self.bn1 = nn.GroupNorm(gn_groups, hidden)
+        else:
+            self.bn1 = nn.BatchNorm2d(hidden)
         self.relu = nn.ReLU(inplace=True)
 
         self.heatmap_head = nn.Sequential(
@@ -39,6 +48,8 @@ class CenterHead(nn.Module):
             nn.Conv2d(hidden // 2, 2, kernel_size=1)
         )
 
+        self.use_logits = use_logits
+        self.use_gn = use_gn
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -54,8 +65,11 @@ class CenterHead(nn.Module):
         size = F.relu(self.size_head(x))
         offset = self.offset_head(x)
 
-        heat = torch.sigmoid(heat)
-        return heat, size, offset
+        # Return raw logits if requested; otherwise return sigmoid probabilities
+        if self.use_logits:
+            return heat, size, offset
+        else:
+            return torch.sigmoid(heat), size, offset
 
 
 if __name__ == '__main__':

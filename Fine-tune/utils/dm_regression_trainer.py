@@ -101,7 +101,11 @@ class RegTrainer(Trainer):
         args = self.args
         
         # Training dataset
-        self.datasets = DetectionDataset(args.data_dir, split='train', output_stride=args.downsample_ratio)
+        ds_sigma = float(getattr(args, 'det_sigma', 0) or 0)
+        if ds_sigma and ds_sigma > 0:
+            self.datasets = DetectionDataset(args.data_dir, split='train', output_stride=args.downsample_ratio, sigma=ds_sigma)
+        else:
+            self.datasets = DetectionDataset(args.data_dir, split='train', output_stride=args.downsample_ratio)
         if self.world_size > 1:
             from torch.utils.data.distributed import DistributedSampler
             train_sampler = DistributedSampler(self.datasets)
@@ -113,7 +117,10 @@ class RegTrainer(Trainer):
 
         # Validation dataset (optional)
         try:
-            self.val_dataset = DetectionDataset(args.data_dir, split='val', output_stride=args.downsample_ratio)
+            if ds_sigma and ds_sigma > 0:
+                self.val_dataset = DetectionDataset(args.data_dir, split='val', output_stride=args.downsample_ratio, sigma=ds_sigma)
+            else:
+                self.val_dataset = DetectionDataset(args.data_dir, split='val', output_stride=args.downsample_ratio)
             if self.world_size > 1:
                 val_sampler = DistributedSampler(self.val_dataset, shuffle=False)
                 self.val_dataloader = DataLoader(self.val_dataset, batch_size=1, sampler=val_sampler, num_workers=8,
@@ -128,7 +135,10 @@ class RegTrainer(Trainer):
 
         # Test dataset (required)
         try:
-            self.test_dataset = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio)
+            if ds_sigma and ds_sigma > 0:
+                self.test_dataset = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio, sigma=ds_sigma)
+            else:
+                self.test_dataset = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio)
             if self.world_size > 1:
                 test_sampler = DistributedSampler(self.test_dataset, shuffle=False)
                 self.test_dataloader = DataLoader(self.test_dataset, batch_size=1, sampler=test_sampler, num_workers=8,
@@ -161,8 +171,35 @@ class RegTrainer(Trainer):
         if args.task == 'detection':
             from models.detection.center_head import CenterHead
             self.model = Swin_BM_RGBT(pre_train=False)
+            # Optionally add a lightweight adaptor to map fused features to head input
+            if getattr(args, 'use_det_adaptor', False):
+                try:
+                    # Allow using GroupNorm in adaptor when requested
+                    in_ch = 768
+                    if getattr(args, 'det_use_gn', False):
+                        # pick a dividing group count
+                        for g in (32, 16, 8, 4, 2, 1):
+                            if in_ch % g == 0:
+                                gn_groups = g
+                                break
+                        bn_layer = nn.GroupNorm(gn_groups, in_ch)
+                    else:
+                        bn_layer = nn.BatchNorm2d(in_ch)
+
+                    self.model.det_adaptor = nn.Sequential(
+                        nn.Conv2d(in_ch, in_ch, kernel_size=1),
+                        bn_layer,
+                        nn.ReLU(inplace=True)
+                    )
+                    logging.info('Initialized det_adaptor (1x1 conv + %s + ReLU) for detection head.',
+                                 'GroupNorm' if getattr(args, 'det_use_gn', False) else 'BatchNorm')
+                except Exception as e:
+                    logging.warning('Failed to initialize det_adaptor: %s', repr(e))
+                except Exception as e:
+                    logging.warning('Failed to initialize det_adaptor: %s', repr(e))
             # Defer detection head attachment until after checkpoint loading
-            self._deferred_det_head = CenterHead(in_channels=768)
+            self._deferred_det_head = CenterHead(in_channels=768, use_logits=getattr(args, 'use_bce_logits', False),
+                                                 use_gn=getattr(args, 'det_use_gn', False))
         else:
             self.model = Swin_BM_RGBT()
         
@@ -320,13 +357,42 @@ class RegTrainer(Trainer):
         args = self.args
         target_model = self.model.module if (self.is_distributed and isinstance(self.model, torch.nn.parallel.DistributedDataParallel)) else self.model
         
-        params = [p for p in target_model.parameters() if p.requires_grad]
-        if len(params) == 0:
-            logging.warning('No trainable parameters remain after applying freeze flags. Check flags.')
+        # If a head-specific LR is provided, create optimizer param groups so
+        # detection head/adaptor params can use a higher lr while keeping other
+        # params at the base lr.
+        head_lr = getattr(args, 'head_lr', None)
+        if head_lr is not None:
+            head_params = []
+            other_params = []
+            for name, p in target_model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if 'det_head' in name or 'det_adaptor' in name:
+                    head_params.append(p)
+                else:
+                    other_params.append(p)
+
+            total_trainable = len(head_params) + len(other_params)
+            if total_trainable == 0:
+                logging.warning('No trainable parameters remain after applying freeze flags. Check flags.')
+                self.optimizer = optim.Adam([], lr=args.lr, weight_decay=args.weight_decay)
+                return
+
+            logging.info(f'Training {total_trainable} parameter tensors (head: {len(head_params)}, other: {len(other_params)})')
+            param_groups = []
+            if len(head_params) > 0:
+                param_groups.append({'params': head_params, 'lr': head_lr})
+            if len(other_params) > 0:
+                param_groups.append({'params': other_params, 'lr': args.lr})
+
+            self.optimizer = optim.Adam(param_groups, weight_decay=args.weight_decay)
         else:
-            logging.info(f'Training {len(params)} parameter tensors (total elements: {sum(p.numel() for p in params)})')
-        
-        self.optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
+            params = [p for p in target_model.parameters() if p.requires_grad]
+            if len(params) == 0:
+                logging.warning('No trainable parameters remain after applying freeze flags. Check flags.')
+            else:
+                logging.info(f'Training {len(params)} parameter tensors (total elements: {sum(p.numel() for p in params)})')
+            self.optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
         
         # Log trainable parameters
         self._log_trainable_parameters(target_model)
@@ -358,7 +424,18 @@ class RegTrainer(Trainer):
         self.rd_loss = CL1()
 
         # Detection losses
-        self.heatmap_loss = nn.BCELoss(reduction='sum')
+        # Heatmap: BCE or focal (both reduction='none' element-wise). Focal requires logits.
+        self.use_focal = bool(getattr(args, 'use_focal_heatmap', False))
+        self.focal_alpha = float(getattr(args, 'focal_alpha', 0.25))
+        self.focal_gamma = float(getattr(args, 'focal_gamma', 2.0))
+        if self.use_focal:
+            # focal implemented manually on logits; use BCEWithLogits for CE term
+            self.heatmap_bce_logits = nn.BCEWithLogitsLoss(reduction='none').to(self.device)
+        else:
+            if getattr(args, 'use_bce_logits', False):
+                self.heatmap_loss = nn.BCEWithLogitsLoss(reduction='none').to(self.device)
+            else:
+                self.heatmap_loss = nn.BCELoss(reduction='none').to(self.device)
         self.l1 = nn.L1Loss(reduction='sum')
 
     def _initialize_metrics(self):
@@ -404,8 +481,14 @@ class RegTrainer(Trainer):
         
         # Step 5: Attach detection head (before DDP)
         self._attach_detection_head()
-        
-        # Step 6: Wrap with DDP if distributed
+
+        # Step 6: Freeze model components BEFORE DDP wrapping so that
+        # DistributedDataParallel sees the correct `requires_grad` flags.
+        # This avoids subtle issues where parameters are frozen after DDP
+        # wrapping and become unused or excluded from the optimizer.
+        self._freeze_model_components()
+
+        # Step 7: Wrap with DDP if distributed
         if self.is_distributed:
             find_unused = bool(getattr(args, 'freeze_backbone', False) or 
                              getattr(args, 'freeze_counter', False) or 
@@ -413,9 +496,6 @@ class RegTrainer(Trainer):
             self.model = torch.nn.parallel.DistributedDataParallel(
                 self.model, device_ids=[self.local_rank], output_device=self.local_rank,
                 find_unused_parameters=find_unused)
-        
-        # Step 7: Freeze model components
-        self._freeze_model_components()
         
         # Step 8: Create optimizer
         self._create_optimizer()
@@ -474,6 +554,10 @@ class RegTrainer(Trainer):
                     # No validation set - use test set for both evaluation and best model selection
                     logging.info('No validation data found; running test epoch for evaluation and model selection.')
                     self.test_epoch(save_best=True)
+                    # If test-based early stopping flagged, break the main training loop
+                    if getattr(self, 'should_stop', False):
+                        logging.info('Early stopping triggered by test-set AP at epoch %d', epoch)
+                        break
         # Clean up distributed resources if used
         if self.is_distributed:
             try:
@@ -575,19 +659,69 @@ class RegTrainer(Trainer):
         size_target = detection_targets['size_target']
         offset_target = detection_targets['offset_target']
         
-        # Heatmap BCE loss
-        hm_loss = self.heatmap_loss(heat_pred, heat_target)
-        
-        # Size/offset only at positive locations
+        # Heatmap loss: BCE or focal-on-logits
+        # heat_pred and heat_target are [B,1,H,W]
         pos_mask = (heat_target > 0).float()
+        if self.use_focal:
+            # compute BCE with logits element-wise
+            ce = self.heatmap_bce_logits(heat_pred, heat_target)
+            # sigmoid for p_t
+            p = torch.sigmoid(heat_pred)
+            p_t = p * pos_mask + (1.0 - p) * (1.0 - pos_mask)
+            focal_factor = (self.focal_alpha * torch.pow(1.0 - p_t, self.focal_gamma)).detach()
+            loss_map = focal_factor * ce
+        else:
+            loss_map = self.heatmap_loss(heat_pred, heat_target)
+
+        pos_loss = (loss_map * pos_mask).sum()
+        # optional hard-negative mining
+        if getattr(self.args, 'det_neg_topk_ratio', None):
+            ratio = float(self.args.det_neg_topk_ratio)
+            neg_map = (loss_map * (1.0 - pos_mask)).view(loss_map.size(0), -1)
+            k = max(1, int(ratio * neg_map.size(1)))
+            # top-k per batch element
+            topk_vals, _ = torch.topk(neg_map, k, dim=1)
+            neg_loss = topk_vals.sum()
+        else:
+            neg_loss = (loss_map * (1.0 - pos_mask)).sum()
+        # normalize by number of pixels to keep scale stable
+        num_pixels = float(loss_map.numel())
+        pos_w = float(getattr(self.args, 'det_pos_weight', 1.0))
+        hm_loss = (pos_loss * pos_w + neg_loss) / max(1.0, num_pixels)
+
+        # Size/offset only at positive locations
         num_pos = pos_mask.sum().clamp(min=1.0)
         mask2 = pos_mask.repeat(1, 2, 1, 1)
-        
         size_l = self.l1(size_pred * mask2, size_target * mask2) / num_pos
         off_l = self.l1(offset_pred * mask2, offset_target * mask2) / num_pos
-        
+
+        # Optional IoU size loss (same-center approx at positive locations)
+        iou_l = torch.tensor(0.0, device=self.device)
+        if bool(getattr(self.args, 'use_iou_size', False)):
+            wp = (size_pred[:, 0:1] * pos_mask).view(size_pred.size(0), -1)
+            hp = (size_pred[:, 1:2] * pos_mask).view(size_pred.size(0), -1)
+            wg = (size_target[:, 0:1] * pos_mask).view(size_target.size(0), -1)
+            hg = (size_target[:, 1:2] * pos_mask).view(size_target.size(0), -1)
+            inter = torch.minimum(wp, wg) * torch.minimum(hp, hg)
+            union = (wp * hp + wg * hg - inter).clamp(min=1e-6)
+            iou = (inter / union)
+            iou_l = (1.0 - iou).sum() / num_pos
+            size_l = size_l + float(getattr(self.args, 'iou_weight', 0.5)) * iou_l
+
         det_loss = (hm_loss + size_l + off_l) * self.args.det_weight
-        return det_loss
+
+        # Return detailed components for logging/diagnostics
+        return {
+            'det_loss': det_loss,
+            'hm_loss': hm_loss,
+            'pos_loss': pos_loss,
+            'neg_loss': neg_loss,
+            'size_l': size_l,
+            'off_l': off_l,
+            'iou_l': iou_l,
+            'num_pixels': num_pixels,
+            'num_pos': num_pos
+        }
 
     def train_eopch(self):
         """Training loop for one epoch"""
@@ -598,6 +732,11 @@ class RegTrainer(Trainer):
         epoch_count_loss = AverageMeter()
         epoch_tv_loss = AverageMeter()
         epoch_det_loss = AverageMeter()
+        epoch_hm_pos = AverageMeter()
+        epoch_hm_neg = AverageMeter()
+        epoch_size_loss = AverageMeter()
+        epoch_off_loss = AverageMeter()
+        epoch_grad_norm = AverageMeter()
         epoch_total_loss = AverageMeter()
         epoch_game = AverageMeter()
         epoch_mse = AverageMeter()
@@ -637,8 +776,14 @@ class RegTrainer(Trainer):
                 # Compute task-specific losses
                 if self.args.task == 'detection':
                     # Detection task - only detection losses
-                    total_loss = self._compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
+                    det_losses = self._compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
+                    total_loss = det_losses['det_loss']
+                    # Log detailed components
                     epoch_det_loss.update(total_loss.item(), N)
+                    epoch_hm_pos.update(float(det_losses['pos_loss']) / max(1.0, float(det_losses['num_pixels'])), N)
+                    epoch_hm_neg.update(float(det_losses['neg_loss']) / max(1.0, float(det_losses['num_pixels'])), N)
+                    epoch_size_loss.update(float(det_losses['size_l']), N)
+                    epoch_off_loss.update(float(det_losses['off_l']), N)
                 else:
                     # Counting task - only counting losses
                     img_h = int(outputs.size(2) * self.downsample_ratio)
@@ -668,6 +813,27 @@ class RegTrainer(Trainer):
                 total_loss.backward()
                 self.optimizer.step()
 
+                # Compute gradient norms for detection head/adaptor (diagnostics)
+                if self.rank == 0:
+                    # determine the (possibly DDP-wrapped) target model
+                    target_model = self.model.module if (self.is_distributed and isinstance(self.model, torch.nn.parallel.DistributedDataParallel)) else self.model
+
+                    def grad_norm_for_params(named_parameters, substrings):
+                        total_sq = 0.0
+                        count = 0
+                        for n, p in named_parameters:
+                            if not p.requires_grad or p.grad is None:
+                                continue
+                            if any(s in n for s in substrings):
+                                total_sq += float((p.grad.data ** 2).sum().cpu().item())
+                                count += 1
+                        return (total_sq ** 0.5, count)
+
+                    gn, gc = grad_norm_for_params(target_model.named_parameters(), ['det_head', 'det_adaptor'])
+                    if gc > 0:
+                        # store grad norm for epoch-level reporting instead of printing every batch
+                        epoch_grad_norm.update(gn, 1)
+
                 # Update metrics
                 pred_count = torch.sum(outputs.view(N, -1), dim=1).detach().cpu().numpy()
                 pred_err = pred_count - gd_count
@@ -685,6 +851,14 @@ class RegTrainer(Trainer):
                  .format(self.epoch, epoch_count_loss.get_avg(), epoch_det_loss.get_avg(), 
                         epoch_total_loss.get_avg(), epoch_rd_loss.get_avg(), epoch_game.get_avg(), 
                         np.sqrt(epoch_mse.get_avg()), time.time() - epoch_start))
+            # additional diagnostics for detection
+            logging.info('Epoch {} Train Detection diagnostics: HM_pos {:.6f}, HM_neg {:.6f}, Size {:.6f}, Off {:.6f}'.format(
+                self.epoch, epoch_hm_pos.get_avg(), epoch_hm_neg.get_avg(), epoch_size_loss.get_avg(), epoch_off_loss.get_avg()))
+            # Gradient norm diagnostic (averaged over epoch) to avoid per-batch printing
+            try:
+                logging.info('Epoch {} Avg Grad Norm (det_head/adaptor): {:.6f}'.format(self.epoch, epoch_grad_norm.get_avg()))
+            except Exception:
+                pass
         
         # Save checkpoint
         model_state_dic = self.model.state_dict()
@@ -718,6 +892,11 @@ class RegTrainer(Trainer):
         
         for idx in range(B):
             hm = heat_pred[idx, 0]
+            # heat_pred may be raw logits if model was configured with `use_bce_logits`.
+            # Convert to probabilities for peak extraction if values are outside [0,1].
+            if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
+                # stable sigmoid
+                hm = 1.0 / (1.0 + np.exp(-hm))
             peaks = heatmap_peaks(hm, min_score=0.01)
             
             preds_px = []
@@ -727,9 +906,61 @@ class RegTrainer(Trainer):
                 cx = (x_out + offx) * self.downsample_ratio
                 cy = (y_out + offy) * self.downsample_ratio
                 preds_px.append((cx, cy, float(score)))
+            # optional eval-time NMS/top-K filtering
+            nms_type = getattr(self.args, 'eval_nms', None)
+            if nms_type:
+                if nms_type == 'radius':
+                    rad = float(getattr(self.args, 'eval_nms_radius', 4.0))
+                    preds_px = self._radius_nms(preds_px, rad)
+                elif nms_type == 'soft':
+                    sigma = float(getattr(self.args, 'eval_soft_nms_sigma', 0.5))
+                    preds_px = self._soft_nms_points(preds_px, sigma)
+            # cap top-200 to avoid huge lists
+            preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:200]
             all_preds.append(preds_px)
         
         return all_preds
+
+    @staticmethod
+    def _radius_nms(preds, radius):
+        if not preds:
+            return []
+        pts = sorted(preds, key=lambda x: x[2], reverse=True)
+        keep = []
+        taken = [False] * len(pts)
+        r2 = radius * radius
+        for i, (x, y, s) in enumerate(pts):
+            if taken[i]:
+                continue
+            keep.append((x, y, s))
+            for j in range(i + 1, len(pts)):
+                if taken[j]:
+                    continue
+                x2, y2, _ = pts[j]
+                dx = x - x2
+                dy = y - y2
+                if dx * dx + dy * dy <= r2:
+                    taken[j] = True
+        return keep
+
+    @staticmethod
+    def _soft_nms_points(preds, sigma):
+        if not preds:
+            return []
+        pts = sorted(preds, key=lambda x: x[2], reverse=True)
+        result = []
+        while pts:
+            x, y, s = pts.pop(0)
+            result.append((x, y, s))
+            new_pts = []
+            for x2, y2, s2 in pts:
+                dist2 = (x - x2) ** 2 + (y - y2) ** 2
+                # gaussian penalty on score
+                s2_new = s2 * np.exp(-dist2 / (2.0 * (sigma ** 2)))
+                if s2_new > 0.0:
+                    new_pts.append((x2, y2, s2_new))
+            pts = sorted(new_pts, key=lambda x: x[2], reverse=True)
+        return result
 
     def _compute_game_metrics(self, outputs, target):
         """Compute GAME metrics at all levels
@@ -802,9 +1033,9 @@ class RegTrainer(Trainer):
                 logging.info('Epoch {} Val Counting: GAME0 {:.2f} GAME1 {:.2f} GAME2 {:.2f} GAME3 {:.2f} MSE {:.2f}'.format(
                     self.epoch, val_game[0], val_game[1], val_game[2], val_game[3], val_mse[0]))
             
-            # Compute and log detection AP
-            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=4.0)
-            logging.info('Epoch {} Val Detection AP: {:.4f}'.format(self.epoch, ap))
+            # Compute and log detection AP (use configurable dist threshold in pixels)
+            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=float(getattr(self.args, 'ap_dist_thresh', 8.0)))
+            logging.info('Epoch {} Val Detection AP (dist {:.1f}px): {:.4f}'.format(self.epoch, float(getattr(self.args, 'ap_dist_thresh', 8.0)), ap))
             
             # Early stopping check - only if we have actual validation data
             if N_val > 0:
@@ -966,9 +1197,9 @@ class RegTrainer(Trainer):
             logging.info('Epoch {} Test Counting: GAME0 {:.2f} GAME1 {:.2f} GAME2 {:.2f} GAME3 {:.2f} MSE {:.2f}'.format(
                 self.epoch, test_game[0], test_game[1], test_game[2], test_game[3], test_mse[0]))
             
-            # Compute and log detection AP
-            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=4.0)
-            logging.info('Epoch {} Test Detection AP: {:.4f}'.format(self.epoch, ap))
+            # Compute and log detection AP (use configurable dist threshold in pixels)
+            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=float(getattr(self.args, 'ap_dist_thresh', 8.0)))
+            logging.info('Epoch {} Test Detection AP (dist {:.1f}px): {:.4f}'.format(self.epoch, float(getattr(self.args, 'ap_dist_thresh', 8.0)), ap))
             
             game = test_game
             mse = test_mse
@@ -1018,8 +1249,10 @@ class RegTrainer(Trainer):
         # Determine if this is the best model and save if needed
         # When save_best=True (no validation set), always check and potentially save based on test performance
         ap = locals().get('ap', None)
+        # remember previous best to update patience counters correctly
+        prev_best_ap = float(self.best_ap) if hasattr(self, 'best_ap') else -np.inf
         should_save, save_msg = self._should_save_best_model(game, ap)
-        
+
         if should_save or save_best:
             if should_save:
                 logging.info(save_msg)
@@ -1028,3 +1261,18 @@ class RegTrainer(Trainer):
                 torch.save(model_state_dic, os.path.join(self.save_dir, "best_model.pth"))
         elif save_msg:
             logging.info(save_msg)
+
+        # Update early-stopping counters based on detection AP (useful when validation is absent)
+        if ap is not None:
+            try:
+                # if we improved over previous best, reset counter
+                if ap > prev_best_ap:
+                    self.no_improve_ap = 0
+                else:
+                    self.no_improve_ap += 1
+                if self.no_improve_ap >= self.det_patience:
+                    logging.info('Detection AP did not improve for %d epochs (patience=%d). Stopping early.',
+                                 self.no_improve_ap, self.det_patience)
+                    self.should_stop = True
+            except Exception:
+                pass

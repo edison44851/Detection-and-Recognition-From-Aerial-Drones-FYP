@@ -5,5 +5,8 @@
 __pycache__
 *.log
 .unit_test
+.github
+.pytest_cache
+tmp_posttrain_*
 checkpoints
 ckpt_verify

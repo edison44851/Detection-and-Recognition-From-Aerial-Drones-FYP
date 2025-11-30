@@ -22,12 +22,30 @@ class DetectionDataset(Dataset):
     output stride is assumed to be `output_stride` (so heatmap size = image size // output_stride).
     """
 
-    def __init__(self, root, split='train', transform=None, output_stride=4, sigma=2):
+    def __init__(self, root, split='train', transform=None, output_stride=4, sigma=2,
+                 rgb_transform=None, t_transform=None):
         self.root = root
         self.split = split
         self.output_stride = output_stride
         self.sigma = sigma
-        self.transform = transform or T.Compose([T.ToTensor()])
+        # default to same normalization used by dm_crowd (keep ToTensor if custom provided)
+        if rgb_transform is None:
+            rgb_transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize(mean=[0.407, 0.389, 0.396], std=[0.241, 0.246, 0.242])
+            ])
+        if t_transform is None:
+            t_transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize(mean=[0.492, 0.168, 0.430], std=[0.317, 0.174, 0.191])
+            ])
+        # backward-compatible single transform argument
+        if transform is not None:
+            self.rgb_transform = transform
+            self.t_transform = transform
+        else:
+            self.rgb_transform = rgb_transform
+            self.t_transform = t_transform
 
         self.dir = os.path.join(root, split)
         files = [f for f in os.listdir(self.dir) if f.endswith('_RGB.jpg')]
@@ -46,8 +64,8 @@ class DetectionDataset(Dataset):
         rgb = Image.open(rgb_p).convert('RGB')
         t = Image.open(t_p).convert('RGB')
 
-        img = self.transform(rgb)  # tensor [3,H,W]
-        timg = self.transform(t)
+        img = self.rgb_transform(rgb)  # tensor [3,H,W]
+        timg = self.t_transform(t)
 
         H, W = img.shape[1], img.shape[2]
         H_out = H // self.output_stride
@@ -79,8 +97,9 @@ class DetectionDataset(Dataset):
             g = np.exp(-dist2 / (2 * (self.sigma ** 2)))
             # accumulate and clip later
             heatmap += g.astype(np.float32)
-            ix = int(np.floor(fx))
-            iy = int(np.floor(fy))
+            # assign size/offset to the nearest output grid cell (sub-pixel aware)
+            ix = int(np.round(fx))
+            iy = int(np.round(fy))
             if 0 <= ix < W_out and 0 <= iy < H_out:
                 size_map[0, iy, ix] = max(size_map[0, iy, ix], 16.0 / self.output_stride)
                 size_map[1, iy, ix] = max(size_map[1, iy, ix], 16.0 / self.output_stride)

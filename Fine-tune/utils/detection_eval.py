@@ -19,25 +19,35 @@ def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: 
 
     Returns list of (x_out, y_out, score) in output-grid coordinates (cols, rows).
     """
+    # Vectorized 3x3 local-maximum detection using sliding-window max (numpy)
     H, W = heatmap.shape
-    peaks = []
-    for y in range(H):
-        for x in range(W):
-            s = float(heatmap[y, x])
-            if s <= min_score:
-                continue
-            if _is_local_maximum(heatmap, y, x):
-                peaks.append((x, y, s))
-    if not peaks:
+    if H == 0 or W == 0:
         return []
-    peaks.sort(key=lambda x: x[2], reverse=True)
-    return peaks[:max_detections]
+    # compute local max over 3x3 neighborhood by taking elementwise maximum of shifted arrays
+    pads = np.pad(heatmap, ((1, 1), (1, 1)), mode='constant', constant_values=-np.inf)
+    neighborhood_max = np.full_like(heatmap, -np.inf, dtype=float)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            neighborhood = pads[1 + dy: 1 + dy + H, 1 + dx: 1 + dx + W]
+            neighborhood_max = np.maximum(neighborhood_max, neighborhood)
+
+    local_max_mask = (heatmap == neighborhood_max) & (heatmap > min_score)
+    ys, xs = np.where(local_max_mask)
+    if ys.size == 0:
+        return []
+    scores = heatmap[ys, xs].astype(float)
+    # sort by score descending
+    order = np.argsort(scores)[::-1]
+    out = []
+    for i in order[:max_detections]:
+        out.append((float(xs[i]), float(ys[i]), float(scores[i])))
+    return out
 
 
 def compute_ap(preds_per_image: List[List[Tuple[float, float, float]]],
                gts_per_image: List[np.ndarray],
                dist_thresh: float = 4.0,
-               thresholds: np.ndarray = None) -> Tuple[float, np.ndarray, np.ndarray]:
+               return_curve: bool = False) -> Tuple[float, np.ndarray, np.ndarray]:
     """Compute AP from center predictions and GT point arrays.
 
     preds_per_image: list of list of (x_px, y_px, score)
@@ -46,78 +56,77 @@ def compute_ap(preds_per_image: List[List[Tuple[float, float, float]]],
 
     Returns: (AP, precisions, recalls) where precisions/recalls arrays correspond to thresholds used.
     """
-    if thresholds is None:
-        thresholds = np.linspace(0.0, 1.0, 101)
-
-    precisions = []
-    recalls = []
-    total_gts = sum([g.shape[0] for g in gts_per_image])
-
-    for thr in thresholds:
-        tp = 0
-        fp = 0
-        for preds, gts in zip(preds_per_image, gts_per_image):
-            # normalize gt shape to (N,2)
-            gts = np.asarray(gts).astype(float)
-            if gts.size == 0:
-                gts = np.zeros((0, 2))
+    # normalize GTs to numpy arrays of shape (Ni,2)
+    gts_list = []
+    total_gts = 0
+    for g in gts_per_image:
+        g_np = np.asarray(g).astype(float)
+        if g_np.size == 0:
+            g_np = np.zeros((0, 2))
+        elif g_np.ndim == 1:
+            if g_np.size == 2:
+                g_np = g_np.reshape(1, 2)
+            elif g_np.size % 2 == 0:
+                g_np = g_np.reshape(-1, 2)
             else:
-                if gts.ndim == 1:
-                    if gts.size == 2:
-                        gts = gts.reshape(1, 2)
-                    elif gts.size % 2 == 0:
-                        gts = gts.reshape(-1, 2)
-                    else:
-                        gts = np.zeros((0, 2))
-                elif gts.ndim == 2:
-                    if gts.shape[1] != 2:
-                        if gts.size % 2 == 0:
-                            gts = gts.reshape(-1, 2)
-                        else:
-                            gts = np.zeros((0, 2))
-                else:
-                    # flatten to pairs if possible
-                    if gts.size % 2 == 0:
-                        gts = gts.reshape(-1, 2)
-                    else:
-                        gts = np.zeros((0, 2))
-            # filter preds by thr
-            sel = [p for p in preds if p[2] >= thr]
-            matched = np.zeros(len(gts), dtype=bool) if len(gts) > 0 else np.zeros(0, dtype=bool)
-            for (px, py, score) in sel:
-                if len(gts) == 0:
-                    fp += 1
-                    continue
-                # compute distances to unmatched gts
-                dists = np.sqrt((gts[:, 0] - px) ** 2 + (gts[:, 1] - py) ** 2)
-                unmatched_idx = np.where(~matched)[0]
-                if unmatched_idx.size == 0:
-                    fp += 1
-                    continue
-                dists_un = dists[unmatched_idx]
-                minpos = int(np.argmin(dists_un))
-                idx = int(unmatched_idx[minpos])
-                if dists_un[minpos] <= dist_thresh:
-                    tp += 1
-                    matched[idx] = True
-                else:
-                    fp += 1
-        fn = total_gts - tp
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        rec = tp / total_gts if total_gts > 0 else 0.0
-        precisions.append(prec)
-        recalls.append(rec)
+                g_np = np.zeros((0, 2))
+        elif g_np.ndim == 2 and g_np.shape[1] != 2:
+            if g_np.size % 2 == 0:
+                g_np = g_np.reshape(-1, 2)
+            else:
+                g_np = np.zeros((0, 2))
+        else:
+            pass
+        gts_list.append(g_np)
+        total_gts += g_np.shape[0]
 
-    precisions = np.array(precisions)
-    recalls = np.array(recalls)
+    # collect all predictions as (img_idx, x, y, score)
+    all_preds = []
+    for img_idx, preds in enumerate(preds_per_image):
+        for (x, y, s) in preds:
+            all_preds.append((img_idx, float(x), float(y), float(s)))
 
-    # compute AP as area under PR curve (sort by recall)
-    # ensure monotonic recall for integration
-    # use simple trapezoidal integration: sort by recall increasing
-    order = np.argsort(recalls)
-    r = recalls[order]
-    p = precisions[order]
+    if len(all_preds) == 0:
+        # no predictions; return zero arrays for consistency
+        return 0.0, np.zeros((0,)), np.zeros((0,))
+
+    # sort predictions by score desc
+    all_preds.sort(key=lambda x: x[3], reverse=True)
+
+    tp_list = []
+    fp_list = []
+    matched = [np.zeros(g.shape[0], dtype=bool) for g in gts_list]
+
+    for img_idx, px, py, score in all_preds:
+        gts = gts_list[img_idx]
+        if gts.shape[0] == 0:
+            fp_list.append(1)
+            tp_list.append(0)
+            continue
+        dists = np.sqrt((gts[:, 0] - px) ** 2 + (gts[:, 1] - py) ** 2)
+        unmatched_idx = np.where(~matched[img_idx])[0]
+        if unmatched_idx.size == 0:
+            fp_list.append(1)
+            tp_list.append(0)
+            continue
+        dists_un = dists[unmatched_idx]
+        minpos = int(np.argmin(dists_un))
+        idx = int(unmatched_idx[minpos])
+        if dists_un[minpos] <= dist_thresh:
+            tp_list.append(1)
+            fp_list.append(0)
+            matched[img_idx][idx] = True
+        else:
+            tp_list.append(0)
+            fp_list.append(1)
+
+    tp_cum = np.cumsum(tp_list).astype(float)
+    fp_cum = np.cumsum(fp_list).astype(float)
+    precisions = tp_cum / (tp_cum + fp_cum + 1e-12)
+    recalls = tp_cum / total_gts if total_gts > 0 else np.zeros_like(tp_cum)
+
     ap = 0.0
-    if len(r) > 1:
-        ap = np.trapz(p, r)
-    return ap, precisions, recalls
+    if precisions.size > 0 and recalls.size > 0 and total_gts > 0:
+        ap = np.trapz(precisions, recalls)
+
+    return float(ap), precisions, recalls
