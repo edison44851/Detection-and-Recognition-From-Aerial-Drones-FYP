@@ -6,17 +6,22 @@ set -euo pipefail
 # 2) tiled (SAHI-style)
 # 3) default visualization (moderate threshold + NMS)
 
-CKPT=${1:-checkpoints/1130-171113/best_model.pth}
+CKPT=${1:-checkpoints/1201-215341/best_model.pth}
 DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_DIR=${3:-./tmp_posttrain_1130-171113}
+OUT_DIR=${3:-./.tmp_posttrain/1201-215341}
 NUM=${4:-64}
 DOWNSAMPLE=${5:-8}
 
-MIN_SCORE_RAW=0.01
-MIN_SCORE_TILE=0.01
+MIN_SCORE_RAW=0.02
+MIN_SCORE_TILE=0.03
 MAX_DETS=1000
-NMS_RADIUS_RAW=0
-NMS_RADIUS_DEF=4
+NMS_RADIUS=0
+SCORE_THRESH_RAW=0.02
+SCORE_THRESH_TILE=0.03
+SCORE_THRESH_ORIG=0.05
+SOFT_NMS_SIGMA_RAW=
+SOFT_NMS_SIGMA_TILE=8
+SOFT_NMS_SIGMA_ORIG=
 TILE_SIZE=512
 TILE_OVER=0.25
 
@@ -34,7 +39,9 @@ python3 Fine-tune/test_detection_vis.py \
   --out "$OUT_DIR/raw" \
   --num "$NUM" --downsample-ratio "$DOWNSAMPLE" \
   --min-score "$MIN_SCORE_RAW" --ap-dist-thresh 8.0 \
-  --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS_RAW" \
+  --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS" \
+  ${SCORE_THRESH_RAW:+--score-thresh "$SCORE_THRESH_RAW"} \
+  ${SOFT_NMS_SIGMA_RAW:+--soft-nms-sigma "$SOFT_NMS_SIGMA_RAW"} \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 INDICES_FILE="$OUT_DIR/raw/selected_indices.txt"
 
@@ -45,7 +52,9 @@ python3 Fine-tune/test_detection_vis.py \
   --out "$OUT_DIR/tiles" \
   --num "$NUM" --downsample-ratio "$DOWNSAMPLE" \
   --min-score "$MIN_SCORE_TILE" --ap-dist-thresh 8.0 \
-  --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS_DEF" \
+  --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS" \
+  ${SCORE_THRESH_TILE:+--score-thresh "$SCORE_THRESH_TILE"} \
+  ${SOFT_NMS_SIGMA_TILE:+--soft-nms-sigma "$SOFT_NMS_SIGMA_TILE"} \
   --tile-size "$TILE_SIZE" --tile-overlap "$TILE_OVER" \
   --indices-file "$INDICES_FILE" \
   --scores-csv "scores.csv" --scores-hist "scores.png"
@@ -56,8 +65,10 @@ python3 Fine-tune/test_detection_vis.py \
   --ckpt "$CKPT" \
   --out "$OUT_DIR/orig" \
   --num "$NUM" --downsample-ratio "$DOWNSAMPLE" \
-  --min-score 0.05 --ap-dist-thresh 8.0 \
-  --max-dets 200 --nms-radius "$NMS_RADIUS_DEF" \
+  --min-score "$SCORE_THRESH_ORIG" --ap-dist-thresh 8.0 \
+  --max-dets 200 --nms-radius "$NMS_RADIUS" \
+  ${SCORE_THRESH_ORIG:+--score-thresh "$SCORE_THRESH_ORIG"} \
+  ${SOFT_NMS_SIGMA_ORIG:+--soft-nms-sigma "$SOFT_NMS_SIGMA_ORIG"} \
   --indices-file "$INDICES_FILE" \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 

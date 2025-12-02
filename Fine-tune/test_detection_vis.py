@@ -48,6 +48,37 @@ def nms_radius(preds, radius):
     return keep
 
 
+def soft_nms_gaussian(preds, sigma, score_thresh=None):
+    """Soft-NMS (Gaussian). preds: list of (x,y,score).
+    Returns filtered list with scores decayed by proximity.
+    """
+    if len(preds) == 0:
+        return []
+    # work on a copy sorted by score
+    pts = sorted([(float(x), float(y), float(s)) for x, y, s in preds], key=lambda x: x[2], reverse=True)
+    keep = []
+    for i in range(len(pts)):
+        xi, yi, si = pts[i]
+        if si <= 0:
+            continue
+        # decay others
+        for j in range(i + 1, len(pts)):
+            xj, yj, sj = pts[j]
+            if sj <= 0:
+                continue
+            d2 = (xi - xj) ** 2 + (yi - yj) ** 2
+            # Gaussian decay
+            decay = np.exp(-d2 / (2.0 * (sigma ** 2)))
+            pts[j] = (xj, yj, sj * (1.0 - decay))
+        # apply score threshold if provided
+        if score_thresh is None or si >= score_thresh:
+            keep.append((xi, yi, si))
+    # final thresholding
+    if score_thresh is not None:
+        keep = [p for p in keep if p[2] >= score_thresh]
+    return keep
+
+
 def vis_on_image(img_rgb, img_t, preds_px, downsample_ratio, save_path):
     # img_rgb, img_t are HxWx3 uint8
     vis = img_rgb.copy()
@@ -241,8 +272,15 @@ def infer_and_visualize(args):
                 gt_pts = gt_pts.numpy()
 
         # apply NMS/topK before matching
+        # optional score thresholding before NMS
+        if args.score_thresh is not None:
+            st = float(args.score_thresh)
+            preds_px = [p for p in preds_px if p[2] >= st]
+        # NMS options
         if args.nms_radius:
             preds_px = nms_radius(preds_px, float(args.nms_radius))
+        if args.soft_nms_sigma:
+            preds_px = soft_nms_gaussian(preds_px, float(args.soft_nms_sigma), score_thresh=args.score_thresh)
         if args.max_dets:
             preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:int(args.max_dets)]
         # perform greedy matching between preds and GTs using distance threshold
@@ -392,6 +430,10 @@ def parse_args():
                         help='keep top-K detections per image after NMS')
     parser.add_argument('--nms-radius', type=float, default=None,
                         help='radius (pixels) for simple radius-NMS to suppress nearby peaks')
+    parser.add_argument('--soft-nms-sigma', type=float, default=None,
+                        help='Gaussian soft-NMS sigma (pixels) for score decay; used after radius-NMS if provided')
+    parser.add_argument('--score-thresh', type=float, default=None,
+                        help='optional score threshold applied before/after NMS to filter predictions')
     parser.add_argument('--scores-csv', type=str, default='scores.csv',
                         help='filename to write per-prediction scores/labels into (written into --out dir); set to empty to skip')
     parser.add_argument('--scores-hist', type=str, default='scores_hist.png',

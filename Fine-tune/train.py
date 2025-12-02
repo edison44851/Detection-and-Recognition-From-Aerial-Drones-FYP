@@ -31,7 +31,7 @@ def parse_args():
                         help='weight for detection loss when multi-task')
     parser.add_argument('--local_rank', type=int, default=0,
                         help='local rank for distributed training (set by torchrun)')
-    parser.add_argument('--det-patience', type=int, default=10,
+    parser.add_argument('--det-patience', type=int, default=5,
                         help='patience (in validation epochs) for detection AP early stopping')
 
     # default
