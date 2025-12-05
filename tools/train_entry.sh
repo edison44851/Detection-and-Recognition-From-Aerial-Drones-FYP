@@ -12,8 +12,8 @@ set -euo pipefail
 
 DATA_DIR=".data/DroneRGBT_converted"
 SAVE_DIR="./checkpoints"
-NPROC=1
-DEVICE="0"
+NPROC=4
+DEVICE="0,1,2,3"
 BATCH_SIZE=1
 MAX_EPOCH=100
 DET_WEIGHT=1.0
@@ -34,6 +34,10 @@ IOU_WEIGHT=0.5
 EVAL_NMS="radius"
 EVAL_NMS_RADIUS=4.0
 EVAL_SOFT_NMS_SIGMA=0.5
+HEAD_CONV=256
+USE_DECONV=1
+NMS_KERNEL=3
+OUTPUT_STRIDE=4
 
 print_usage(){
   echo "Usage: $0 --data-dir PATH [--save-dir PATH] [--nproc N] [--device DEVICES] [--batch-size N] [--max-epoch N] [--det-weight W] -- [extra args passed to train.py]"
@@ -87,6 +91,14 @@ while [[ $# -gt 0 ]]; do
       EVAL_NMS_RADIUS="$2"; shift 2;;
     --eval-soft-nms-sigma)
       EVAL_SOFT_NMS_SIGMA="$2"; shift 2;;
+    --head-conv)
+      HEAD_CONV="$2"; shift 2;;
+    --use-deconv)
+      USE_DECONV=1; shift 1;;
+    --nms-kernel)
+      NMS_KERNEL="$2"; shift 2;;
+    --output-stride)
+      OUTPUT_STRIDE="$2"; shift 2;;
     --)
       shift
       EXTRA_ARGS="$*"
@@ -121,6 +133,10 @@ echo "  use-focal-heatmap: $USE_FOCAL_HEATMAP (alpha=$FOCAL_ALPHA gamma=$FOCAL_G
 echo "  det-neg-topk-ratio: $DET_NEG_TOPK_RATIO"
 echo "  use-iou-size: $USE_IOU_SIZE (iou-weight=$IOU_WEIGHT)"
 echo "  eval-nms: $EVAL_NMS (radius=$EVAL_NMS_RADIUS soft-sigma=$EVAL_SOFT_NMS_SIGMA)"
+echo "  head-conv: $HEAD_CONV"
+echo "  use-deconv: $USE_DECONV"
+echo "  nms-kernel: $NMS_KERNEL"
+echo "  output-stride: $OUTPUT_STRIDE"
 
 # Build torchrun command. We don't pass --local_rank (torchrun sets it in env).
 if [[ "$NPROC" -eq 1 ]]; then
@@ -131,7 +147,7 @@ if [[ "$NPROC" -eq 1 ]]; then
     --freeze-unet
     --freeze-counter
     --resume .weights/drone_rgbt_best_494_781.pth
-    --downsample-ratio 8
+    --output-stride "${OUTPUT_STRIDE}"
     --data-dir "${DATA_DIR}"
     --save-dir "${SAVE_DIR}"
     --batch-size "${BATCH_SIZE}"
@@ -150,6 +166,9 @@ if [[ "$NPROC" -eq 1 ]]; then
     $( [[ -n "$EVAL_NMS" ]] && echo "--eval-nms $EVAL_NMS" )
     $( [[ -n "$EVAL_NMS_RADIUS" ]] && echo "--eval-nms-radius $EVAL_NMS_RADIUS" )
     $( [[ -n "$EVAL_SOFT_NMS_SIGMA" ]] && echo "--eval-soft-nms-sigma $EVAL_SOFT_NMS_SIGMA" )
+    $( [[ -n "$HEAD_CONV" ]] && echo "--head-conv $HEAD_CONV" )
+    $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" )
+    $( [[ -n "$NMS_KERNEL" ]] && echo "--nms-kernel $NMS_KERNEL" )
     --device "${DEVICE}" --local_rank 0)
 else
   CMD=(torchrun --nproc_per_node=${NPROC} Fine-tune/train.py
@@ -158,7 +177,7 @@ else
     --freeze-unet
     --freeze-counter
     --resume .weights/drone_rgbt_best_494_781.pth
-    --downsample-ratio 8
+    --output-stride "${OUTPUT_STRIDE}"
     --data-dir "${DATA_DIR}"
     --save-dir "${SAVE_DIR}"
     --batch-size "${BATCH_SIZE}"
@@ -177,6 +196,9 @@ else
     $( [[ -n "$EVAL_NMS" ]] && echo "--eval-nms $EVAL_NMS" )
     $( [[ -n "$EVAL_NMS_RADIUS" ]] && echo "--eval-nms-radius $EVAL_NMS_RADIUS" )
     $( [[ -n "$EVAL_SOFT_NMS_SIGMA" ]] && echo "--eval-soft-nms-sigma $EVAL_SOFT_NMS_SIGMA" )
+    $( [[ -n "$HEAD_CONV" ]] && echo "--head-conv $HEAD_CONV" )
+    $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" )
+    $( [[ -n "$NMS_KERNEL" ]] && echo "--nms-kernel $NMS_KERNEL" )
     --device "${DEVICE}")
 fi
 

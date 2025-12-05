@@ -1,5 +1,35 @@
 import numpy as np
 from typing import List, Tuple
+import torch
+import torch.nn.functional as F
+
+
+def _nms(heatmap, kernel=3):
+    """Apply max-pooling NMS to heatmap (CenterNet style).
+    
+    Args:
+        heatmap: numpy array [H, W] or torch tensor [B, C, H, W]
+        kernel: NMS kernel size (default 3)
+    
+    Returns:
+        NMS-filtered heatmap (same type/shape as input)
+    """
+    is_numpy = isinstance(heatmap, np.ndarray)
+    
+    if is_numpy:
+        # Convert to torch for max_pool2d
+        hm_torch = torch.from_numpy(heatmap).unsqueeze(0).unsqueeze(0).float()
+    else:
+        hm_torch = heatmap
+    
+    pad = (kernel - 1) // 2
+    hmax = F.max_pool2d(hm_torch, kernel_size=kernel, stride=1, padding=pad)
+    keep = (hmax == hm_torch).float()
+    result = hm_torch * keep
+    
+    if is_numpy:
+        return result.squeeze().numpy()
+    return result
 
 
 def _is_local_maximum(hm: np.ndarray, y: int, x: int) -> bool:
@@ -14,16 +44,29 @@ def _is_local_maximum(hm: np.ndarray, y: int, x: int) -> bool:
     return True
 
 
-def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: int = 200) -> List[Tuple[float, float, float]]:
-    """Simple local-maximum peak extraction.
+def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: int = 200, 
+                   use_nms: bool = True, nms_kernel: int = 3) -> List[Tuple[float, float, float]]:
+    """Extract peaks from heatmap with optional NMS (CenterNet style).
 
-    Returns list of (x_out, y_out, score) in output-grid coordinates (cols, rows).
+    Args:
+        heatmap: 2D numpy array [H, W]
+        min_score: minimum score threshold
+        max_detections: maximum number of detections to return
+        use_nms: whether to apply max-pooling NMS before peak extraction
+        nms_kernel: kernel size for NMS (default 3)
+
+    Returns:
+        List of (x_out, y_out, score) in output-grid coordinates (cols, rows).
     """
-    # Vectorized 3x3 local-maximum detection using sliding-window max (numpy)
     H, W = heatmap.shape
     if H == 0 or W == 0:
         return []
-    # compute local max over 3x3 neighborhood by taking elementwise maximum of shifted arrays
+    
+    # Apply NMS if requested (CenterNet uses this to suppress nearby duplicates)
+    if use_nms:
+        heatmap = _nms(heatmap, kernel=nms_kernel)
+    
+    # Vectorized 3x3 local-maximum detection using sliding-window max (numpy)
     pads = np.pad(heatmap, ((1, 1), (1, 1)), mode='constant', constant_values=-np.inf)
     neighborhood_max = np.full_like(heatmap, -np.inf, dtype=float)
     for dy in (-1, 0, 1):

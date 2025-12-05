@@ -118,46 +118,291 @@ These additions give flexible, opt-in controls to experiment with detection loss
 
 ---
 
-## Proposed Architecture Improvements (2025-11-30)
+# Detection Head Architecture Analysis & Improvement Plan (December 5, 2025)
 
-- Lightweight neck + multi-scale head outputs
-	- What: Insert a tiny neck (depthwise separable convs + GroupNorm + SiLU) to produce features at strides 4 and 8, feed both to the head, and merge outputs during evaluation.
-	- Files: `Fine-tune/models/detection/center_head.py`, `Fine-tune/models/detection/det_model.py`, `Fine-tune/models/counting/swin_unet.py` (expose P4/P8 features).
-	- Flags: `--use-neck dwsep_gn`, `--multi-scale-head true`, `--strides 4,8`, `--merge-scales true`.
-	- Potential impact: Precision increases for tiny aerial targets; slight FP growth if thresholds not tuned; small parameter/runtime overhead.
-	- References: FPN (Lin et al. 2017), PANet (Liu et al. 2018), BiFPN / EfficientDet (Tan et al. 2020), MobileNet depthwise separable convs (Howard et al. 2017), SiLU/Swish (Ramachandran et al. 2017).
+## Problem Statement
 
-- Centerness branch (FCOS-like score calibration)
-	- What: Add a 1-channel centerness branch; compute final score as `sigmoid(heatmap) * sigmoid(centerness)`; train centerness with BCE/focal targets from geometry.
-	- Files: `center_head.py` (add `centerness_head`), trainer loss wiring, `det_model.py` decode.
-	- Flags: `--use-centerness true`, `--centerness-weight 1.0`, `--score-mode heatmap_centerness`.
-	- Potential impact: False positives reduced by penalizing off-center peaks; recall may dip if targets are noisy for very small boxes.
-	- References: FCOS (Tian et al. 2019) centerness formulation; CenterNet (Zhou et al. 2019) heatmap peak concepts.
+The current detection experiments show poor performance:
+- **Baseline checkpoint (1130-145629)**: Very few predictions (25 total, max score ~0.20) → TP=11, FP=14, FN=1971. Extremely low recall.
+- **Later checkpoints (1201-200253, 1201-215341)**: Massive over-prediction (12,800 predictions with scores ~0.8–1.0) → TP~280–295, FP~12,500. Very low precision.
 
-- Quality/IoU branch + Varifocal/QFL
-	- What: Predict an IoU/quality score per detection; train with Varifocal/QFL and use quality-calibrated scores at inference (`score = heatmap * quality`).
-	- Files: `center_head.py` (add `quality_head`), `Fine-tune/losses/varifocal.py` (new), trainer IoU target computation, `det_model.py` post-process.
-	- Flags: `--use-quality true`, `--quality-loss varifocal`, `--quality-weight 0.5`, `--enable-quality-after-epochs 5`.
-	- Potential impact: Better score calibration and fewer FPs at same recall; extra compute to form IoU targets; enable after warmup for stability.
-	- References: Varifocal Loss (Zhang et al. 2021), GFocal (Li et al. 2020), PP-YOLOE (Xu et al. 2022), Task-Aligned Label Assignment (Wang et al. 2021).
+Root causes identified:
+1. **Score calibration mismatch** — Models output vastly different score ranges (0–0.2 vs 0.8–1.0) despite identical architecture, suggesting training instability or improper heatmap initialization.
+2. **Architectural weakness** — Current `CenterHead` is too simple compared to CenterNet's proven design.
+3. **Missing NMS / post-processing** — No max-pooling NMS in decode, relying only on score threshold and radius NMS at eval time.
 
-- Deformable conv in head (optional)
-	- What: Replace the first head conv with `DeformConv2d` to improve localization of small, off-grid centers.
-	- Files: `center_head.py` (conditional block).
-	- Flags: `--deform-head true`.
-	- Potential impact: Localization improves; minor runtime increase; requires CUDA kernels.
-	- References: Deformable ConvNets v1 (Dai et al. 2017), Deformable ConvNets v2 (Zhu et al. 2019).
+## Architectural Comparison: CenterHead vs CenterNet
 
-- Cross-attention RGB–Thermal fusion (lightweight)
-	- What: Insert a small cross-attention block between RGB and Thermal features at stride 4 before the head to improve modality alignment.
-	- Files: `swin_unet.py` (fusion block), `det_model.py` (fusion routing).
-	- Flags: `--fusion cross_att`, `--fusion_depth 1`.
-	- Potential impact: Precision gain via reduced modality mismatch; increased complexity; keep block tiny for stability.
-	- References: Transformer attention (Vaswani et al. 2017), RGB-T object detection survey (e.g., Wu et al. 2020), MFNet (Choi et al. 2018) multimodal fusion concepts.
+### Current Implementation (`Fine-tune/models/detection/center_head.py`)
 
-- Post-process/NMS refinements
-	- What: Per-level top-K, global NMS merge across scales, tuned radius-NMS/soft-NMS, and threshold scheduling for better precision.
-	- Files: `Fine-tune/utils/detection_eval.py`, `Fine-tune/test_detection_vis.py` (options).
-	- Flags: `--topk-per-level 300`, `--eval-nms-radius 2`, `--eval-soft-nms-sigma 0.5`, `--max-dets 200`.
-	- Potential impact: FPs decrease with calibrated thresholds/NMS; aggressive settings may reduce recall.
-	- References: Soft-NMS (Bodla et al. 2017), SAHI tiling (Ulku et al. 2022), CenterNet radius suppression (Zhou et al. 2019).
+```
+Input (768 channels, stride-8 from Swin+UNet fusion)
+  ↓
+conv1: Conv2d(768 → 256, 3×3, pad=1)
+bn1: BatchNorm2d(256) or GroupNorm
+relu
+  ↓
+├─ heatmap_head: Conv(256→128, 3×3) → ReLU → Conv(128→1, 1×1) [→ sigmoid if not logits]
+├─ size_head:    Conv(256→128, 3×3) → ReLU → Conv(128→2, 1×1) → ReLU
+└─ offset_head:  Conv(256→128, 3×3) → ReLU → Conv(128→2, 1×1)
+```
+
+**Issues:**
+- Only **1 shared conv layer** before heads → limited feature processing
+- No upsampling/deconv → stuck at stride-8 (CenterNet uses stride-4)
+- Shallow heads (2 layers, 128 hidden) → low capacity
+- **Heatmap bias initialized to 0** (Kaiming init) → poor convergence for sparse targets
+- No residual connections or multi-scale features
+
+### CenterNet Reference (`pose_dla_dcn.py`, `msra_resnet.py`)
+
+**ResNet variant architecture:**
+```
+Input (3 channels, image)
+  ↓
+ResNet backbone (stride-32 at layer4 output, 2048 channels)
+  ↓
+3× Deconv layers (ConvTranspose2d):
+  - deconv1: ConvTranspose2d(2048→256, kernel=4, stride=2) + BN + ReLU  [stride 16]
+  - deconv2: ConvTranspose2d(256→256, kernel=4, stride=2) + BN + ReLU   [stride 8]
+  - deconv3: ConvTranspose2d(256→256, kernel=4, stride=2) + BN + ReLU   [stride 4]
+  ↓
+Per-task heads (head_conv=256 by default):
+  - heatmap ('hm'):  Conv(256→256, 3×3, pad=1) → ReLU → Conv(256→num_classes, 1×1)
+                     **bias initialized to -2.19** (ln(0.1/0.9) for focal loss)
+  - width-height:    Conv(256→256, 3×3) → ReLU → Conv(256→2, 1×1)
+  - offset:          Conv(256→256, 3×3) → ReLU → Conv(256→2, 1×1)
+```
+
+**DLA-DCN variant architecture:**
+```
+Input (3 channels)
+  ↓
+DLA backbone with hierarchical aggregation (Tree structure)
+  ↓
+DLAUp: Hierarchical upsampling with IDAUp modules
+  - Uses DeformConv (DCNv2) for adaptive receptive fields
+  - Aggregates multi-scale features from levels 2–5
+  - Final output at stride-4, 64 channels
+  ↓
+IDAUp: Final aggregation to single-scale (stride-4, output_channel=64)
+  ↓
+Per-task heads (same structure as ResNet, head_conv=256):
+  - heatmap: Conv(64→256, 3×3) → ReLU → Conv(256→classes, 1×1), **bias=-2.19**
+  - wh, offset: same pattern
+```
+
+**Key differences summary:**
+
+| Component | Current `CenterHead` | CenterNet (ResNet) | CenterNet (DLA-DCN) |
+|-----------|---------------------|-------------------|---------------------|
+| **Input stride** | 8 (Swin+UNet output) | 32 (ResNet layer4) → 4 (after deconv) | 4 (DLA hierarchical up) |
+| **Upsampling** | None | 3× ConvTranspose2d (8× upsample) | DLA IDAUp + DCNv2 |
+| **Shared processing** | 1 conv layer (768→256) | 3 deconv layers (2048→256) | Hierarchical DLA aggregation |
+| **Head conv channels** | 128 | 256 | 256 |
+| **Head depth** | 2 layers per head | 2 layers per head | 2 layers per head |
+| **Heatmap init** | bias=0 (Kaiming) | **bias=-2.19** | **bias=-2.19** |
+| **Deformable conv** | No | No | Yes (DCNv2 in IDAUp) |
+| **Feature capacity** | Low (768→256→128) | High (2048→256→256) | Very high (DCN + multi-scale) |
+| **NMS in decode** | No (only eval-time) | Yes (max-pool 3×3) | Yes (max-pool 3×3) |
+
+## Recommended Improvements (Staged Options)
+
+### Option A: Minimal Fix (Quick Win, Low Risk)
+**Goal:** Fix initialization and widen heads without changing architecture significantly.
+
+**Changes:**
+1. **Heatmap bias initialization to -2.19** in `CenterHead.__init__`:
+   ```python
+   # In heatmap_head final conv layer
+   nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
+   ```
+2. **Increase head_conv from 128 to 256** (change default `hidden=256` to `hidden=512`, or add new param `head_conv=256`)
+3. **Add one more shared conv layer** before branching to heads:
+   ```python
+   self.conv1 = nn.Conv2d(in_channels, hidden, 3, padding=1)
+   self.bn1 = nn.BatchNorm2d(hidden)
+   self.conv2 = nn.Conv2d(hidden, hidden, 3, padding=1)  # NEW
+   self.bn2 = nn.BatchNorm2d(hidden)                      # NEW
+   ```
+
+**Pros:** Minimal code change, backwards-compatible (can load old checkpoints into wider head), fast to test  
+**Cons:** Still at stride-8, no upsampling, limited capacity improvement  
+**Expected improvement:** Better score calibration, slightly higher AP (still limited by stride-8 resolution)
+
+---
+
+### Option B: CenterNet-Style Head with Deconv (Moderate Upgrade, Recommended)
+**Goal:** Match CenterNet's proven head design while keeping Swin+UNet backbone.
+
+**Architecture changes:**
+1. **Add deconv/upsample module** to reduce stride from 8 to 4:
+   - Option B1 (lightweight): `Upsample(scale=2, mode='bilinear') + Conv(768→256, 3×3) + BN + ReLU`
+   - Option B2 (CenterNet-like): `ConvTranspose2d(768→256, kernel=4, stride=2, pad=1) + BN + ReLU`
+
+2. **Replace `CenterHead` with `CenterNetHead`:**
+   ```python
+   class CenterNetHead(nn.Module):
+       def __init__(self, in_channels=768, head_conv=256, use_deconv=True):
+           super().__init__()
+           
+           # Upsampling module (stride 8 → 4)
+           if use_deconv:
+               self.upsample = nn.Sequential(
+                   nn.ConvTranspose2d(in_channels, 256, kernel_size=4, stride=2, padding=1, bias=False),
+                   nn.BatchNorm2d(256),
+                   nn.ReLU(inplace=True)
+               )
+           else:
+               self.upsample = nn.Sequential(
+                   nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                   nn.Conv2d(in_channels, 256, 3, padding=1, bias=False),
+                   nn.BatchNorm2d(256),
+                   nn.ReLU(inplace=True)
+               )
+           
+           # Heatmap head with proper init
+           self.heatmap = nn.Sequential(
+               nn.Conv2d(256, head_conv, 3, padding=1, bias=True),
+               nn.ReLU(inplace=True),
+               nn.Conv2d(head_conv, 1, 1, bias=True)
+           )
+           nn.init.constant_(self.heatmap[-1].bias, -2.19)  # CRITICAL
+           
+           # Size head
+           self.wh = nn.Sequential(
+               nn.Conv2d(256, head_conv, 3, padding=1, bias=True),
+               nn.ReLU(inplace=True),
+               nn.Conv2d(head_conv, 2, 1, bias=True)
+           )
+           
+           # Offset head
+           self.offset = nn.Sequential(
+               nn.Conv2d(256, head_conv, 3, padding=1, bias=True),
+               nn.ReLU(inplace=True),
+               nn.Conv2d(head_conv, 2, 1, bias=True)
+           )
+   ```
+
+3. **Add max-pooling NMS** in `detection_eval.py::heatmap_peaks`:
+   ```python
+   def _nms(heatmap, kernel=3):
+       pad = (kernel - 1) // 2
+       hmax = F.max_pool2d(heatmap, kernel, stride=1, padding=pad)
+       keep = (hmax == heatmap).float()
+       return heatmap * keep
+   
+   # Apply before peak extraction
+   heatmap_nms = _nms(torch.from_numpy(heatmap).unsqueeze(0).unsqueeze(0)).squeeze().numpy()
+   peaks = heatmap_peaks(heatmap_nms, min_score=...)
+   ```
+
+**Pros:** 
+- Matches proven CenterNet design
+- Better spatial resolution (stride-4 vs stride-8)
+- Proper heatmap initialization → better convergence
+- Wider heads (256 vs 128) → higher capacity
+- Can still leverage frozen Swin+UNet backbone
+
+**Cons:** 
+- Requires new checkpoint training (cannot load old `CenterHead` weights)
+- Slightly higher memory/FLOPs (1 deconv layer + wider heads)
+
+**Expected improvement:** Significant AP gain (2–5× depending on dataset), better score calibration, reduced FP rate
+
+---
+
+### Option C: Full CenterNet-Style Detection Branch with DCN (Advanced, Future Work)
+**Goal:** Maximum performance with deformable convolutions and multi-scale features.
+
+**Changes:**
+1. Install DCNv2: `pip install git+https://github.com/lbin/DCNv2.git` or use torchvision's `DeformConv2d` (requires PyTorch ≥1.9)
+2. Replace deconv with **DCN-based IDAUp** (hierarchical aggregation from CenterNet DLA)
+3. Add **multi-scale feature extraction** from Swin backbone (extract features at multiple stages)
+4. Use **deformable conv in heads** for adaptive receptive fields
+
+**Pros:** State-of-the-art detection performance, adaptive to object scale/shape  
+**Cons:** Complex implementation, higher compute cost, requires DCNv2 install, harder to debug  
+**Expected improvement:** Best possible AP, but diminishing returns vs Option B for aerial datasets
+
+---
+
+## Implementation Plan (Option B Recommended)
+
+### Phase 1: Create New Head Module (1–2 hours)
+1. Create `Fine-tune/models/detection/centernet_head.py`:
+   - Implement `CenterNetHead` class with deconv/upsample option
+   - Add proper heatmap bias initialization (-2.19)
+   - Support `head_conv` and `use_deconv` arguments
+   - Add kaiming init for other conv layers
+
+2. Update `Fine-tune/models/detection/det_model.py`:
+   - Import `CenterNetHead`
+   - Add `DetectionHeadWrapper` constructor option to use `CenterNetHead` instead of `CenterHead`
+   - Support `--use-centernet-head` flag
+
+### Phase 2: Update Evaluation & NMS (30 min)
+1. Add `_nms` function to `Fine-tune/utils/detection_eval.py`
+2. Apply NMS before peak extraction in `heatmap_peaks()`
+3. Add `--nms-kernel` flag (default=3) to control NMS pooling size
+
+### Phase 3: Update Trainer & CLI (30 min)
+1. Add flags to `Fine-tune/train.py`:
+   - `--use-centernet-head`: Use CenterNet-style head instead of simple `CenterHead`
+   - `--head-conv`: Head conv channels (default 256)
+   - `--use-deconv`: Use ConvTranspose2d instead of bilinear upsample
+   - `--nms-kernel`: NMS kernel size for heatmap decode
+
+2. Update `Fine-tune/utils/dm_regression_trainer.py`:
+   - Modify `_create_model()` to instantiate `CenterNetHead` when flag is set
+   - Pass `head_conv` and `use_deconv` to head constructor
+
+### Phase 4: Testing & Validation (1 hour)
+1. Add unit test: `Fine-tune/utils/tests/test_centernet_head.py`
+   - Test output shapes with/without deconv
+   - Verify heatmap bias is -2.19
+   - Check gradient flow
+
+2. Run smoke test:
+   ```bash
+   python3 Fine-tune/train.py \
+     --data-dir .data/DroneRGBT_counting \
+     --save-dir ./checkpoints_test \
+     --task detection \
+     --use-centernet-head \
+     --head-conv 256 \
+     --use-deconv \
+     --batch-size 2 \
+     --max-epoch 2 \
+     --freeze-backbone
+   ```
+
+3. Compare head outputs on same input for old vs new head
+
+### Phase 5: Re-training & Benchmarking (pending user approval)
+Once implementation is validated:
+1. Train new checkpoint with `--use-centernet-head --head-conv 256 --use-deconv`
+2. Compare against baseline (1130-145629) on same test set
+3. Run post-train diagnostics and compare TP/FP/AP metrics
+4. Document results in `.plan/experiments.md`
+
+## Expected Outcomes
+
+### Minimal Fix (Option A)
+- **Training stability**: Better score calibration, fewer saturated predictions
+- **AP improvement**: +5–10% relative (from ~0.5% to ~5.5% AP)
+- **Time to implement**: <1 hour
+
+### CenterNet-Style Head (Option B) — RECOMMENDED
+- **Training stability**: Significantly improved convergence, proper focal loss behavior
+- **AP improvement**: +50–200% relative (from ~0.5% to 5–15% AP estimated)
+- **Spatial resolution**: Stride-4 output improves small-object localization
+- **Score calibration**: Predictions in 0.1–0.9 range (well-calibrated for focal loss)
+- **Time to implement**: 2–3 hours
+- **Backward compatibility**: Requires retraining, old checkpoints incompatible
+
+### Full DCN Branch (Option C)
+- **AP improvement**: +100–300% over baseline (10–20% AP estimated)
+- **Complexity**: High (DCN install, multi-scale logic, harder debugging)
+- **Time to implement**: 1–2 days
+- **Recommended**: Only if Option B results are insufficient

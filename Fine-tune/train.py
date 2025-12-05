@@ -31,7 +31,7 @@ def parse_args():
                         help='weight for detection loss when multi-task')
     parser.add_argument('--local_rank', type=int, default=0,
                         help='local rank for distributed training (set by torchrun)')
-    parser.add_argument('--det-patience', type=int, default=5,
+    parser.add_argument('--det-patience', type=int, default=10,
                         help='patience (in validation epochs) for detection AP early stopping')
 
     # default
@@ -53,7 +53,6 @@ def parse_args():
                         help='the num of training process')
     parser.add_argument('--downsample-ratio', type=int, default=8,
                         help='downsample ratio')
-    # alias for clarity
     parser.add_argument('--output-stride', type=int, default=None,
                         help='(alias) output stride / downsample ratio; overrides --downsample-ratio when provided')
     parser.add_argument('--det-pos-weight', type=float, default=1.0,
@@ -90,6 +89,14 @@ def parse_args():
                         help='radius (pixels) for radius NMS when eval-nms=radius')
     parser.add_argument('--eval-soft-nms-sigma', type=float, default=0.5,
                         help='sigma for Soft-NMS when eval-nms=soft')
+    
+    # CenterNet-style detection head options (Option B)
+    parser.add_argument('--head-conv', type=int, default=256,
+                        help='detection head conv channels (CenterNet default: 256)')
+    parser.add_argument('--use-deconv', action='store_true',
+                        help='use ConvTranspose2d for upsampling (CenterNet style); else use bilinear+conv')
+    parser.add_argument('--nms-kernel', type=int, default=3,
+                        help='NMS kernel size for heatmap decode (default 3, CenterNet uses 3)')
                         
     # For DM-Count
     parser.add_argument('--wot', type=float, default=0.1, help='weight on OT loss')

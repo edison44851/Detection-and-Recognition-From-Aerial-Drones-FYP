@@ -198,7 +198,12 @@ class RegTrainer(Trainer):
                 except Exception as e:
                     logging.warning('Failed to initialize det_adaptor: %s', repr(e))
             # Defer detection head attachment until after checkpoint loading
-            self._deferred_det_head = DetectionHeadWrapper(in_channels=768, hidden=256)
+            head_conv = getattr(args, 'head_conv', 256)
+            use_deconv = getattr(args, 'use_deconv', False)
+            self._deferred_det_head = DetectionHeadWrapper(
+                in_channels=768, hidden=256, 
+                head_conv=head_conv, use_deconv=use_deconv
+            )
             # Pass use_logits and use_gn to the underlying CenterHead
             self._deferred_det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
             self._deferred_det_head.head.use_gn = getattr(args, 'det_use_gn', False)
@@ -492,9 +497,9 @@ class RegTrainer(Trainer):
 
         # Step 7: Wrap with DDP if distributed
         if self.is_distributed:
-            find_unused = bool(getattr(args, 'freeze_backbone', False) or 
-                             getattr(args, 'freeze_counter', False) or 
-                             getattr(args, 'freeze_unet', False))
+            # Set find_unused_parameters=False since we now properly freeze components before DDP
+            # and all active parameters are used in forward pass (detection head is always attached)
+            find_unused = False
             self.model = torch.nn.parallel.DistributedDataParallel(
                 self.model, device_ids=[self.local_rank], output_device=self.local_rank,
                 find_unused_parameters=find_unused)
@@ -899,7 +904,11 @@ class RegTrainer(Trainer):
             if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
                 # stable sigmoid
                 hm = 1.0 / (1.0 + np.exp(-hm))
-            peaks = heatmap_peaks(hm, min_score=0.01)
+            
+            # Apply NMS during peak extraction (CenterNet-style)
+            use_nms = True  # Enable by default for CenterNet-style heads
+            nms_kernel = getattr(self.args, 'nms_kernel', 3)
+            peaks = heatmap_peaks(hm, min_score=0.01, use_nms=use_nms, nms_kernel=nms_kernel)
             
             preds_px = []
             for x_out, y_out, score in peaks:

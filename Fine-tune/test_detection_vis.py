@@ -172,14 +172,34 @@ def infer_and_visualize(args):
     # U-Net RGB-T fusion. Load whatever keys the checkpoint contains (backbone,
     # unet, reg_layer, det_head if present) permissively.
     model = Swin_BM_RGBT(pre_train=False)
-    det_head = CenterHead(in_channels=768)
+    
+    # Create det_adaptor if it was used during training (GroupNorm + 1x1 conv)
+    # This is CRITICAL - must match training configuration
+    in_ch = 768
+    for g in (32, 16, 8, 4, 2, 1):
+        if in_ch % g == 0:
+            gn_groups = g
+            break
+    model.det_adaptor = nn.Sequential(
+        nn.Conv2d(in_ch, in_ch, kernel_size=1),
+        nn.GroupNorm(gn_groups, in_ch),
+        nn.ReLU(inplace=True)
+    )
+    
+    # Create CenterHead with parameters matching training configuration
+    # Default to CenterNet-style settings: head_conv=256, use_deconv=True
+    head_conv = getattr(args, 'head_conv', 256)
+    use_deconv = getattr(args, 'use_deconv', True)
+    det_head = CenterHead(in_channels=768, head_conv=head_conv, use_deconv=use_deconv)
     try:
         model.attach_det_head(det_head)
     except Exception:
-        model.det_adaptor = getattr(model, 'det_adaptor', nn.Identity())
         model.det_head = det_head
 
     ckpt = torch.load(args.ckpt, map_location=device)
+    # Strip 'module.' prefix from DDP checkpoint if present
+    if isinstance(ckpt, dict) and any(k.startswith('module.') for k in ckpt.keys()):
+        ckpt = {k.replace('module.', ''): v for k, v in ckpt.items()}
     # permissive load into model (will ignore missing keys)
     try:
         model.load_state_dict(ckpt if isinstance(ckpt, dict) and 'model_state_dict' not in ckpt else ckpt.get('model_state_dict', ckpt), strict=False)
@@ -216,7 +236,10 @@ def infer_and_visualize(args):
                 hm = heat_np[0, 0]
                 if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
                     hm = 1.0 / (1.0 + np.exp(-hm))
-                peaks = heatmap_peaks(hm, min_score=args.min_score)
+                # Apply NMS during peak extraction (use args or defaults)
+                use_nms = True
+                nms_kernel = getattr(args, 'nms_kernel', 3)
+                peaks = heatmap_peaks(hm, min_score=args.min_score, use_nms=use_nms, nms_kernel=nms_kernel)
                 for x_out, y_out, score in peaks:
                     offx = float(off_np[0, 0, int(y_out), int(x_out)]) if off_np is not None else 0.0
                     offy = float(off_np[0, 1, int(y_out), int(x_out)]) if off_np is not None else 0.0
@@ -430,6 +453,8 @@ def parse_args():
                         help='keep top-K detections per image after NMS')
     parser.add_argument('--nms-radius', type=float, default=None,
                         help='radius (pixels) for simple radius-NMS to suppress nearby peaks')
+    parser.add_argument('--nms-kernel', type=int, default=3,
+                        help='NMS kernel size for max-pooling NMS during heatmap peak extraction (CenterNet-style)')
     parser.add_argument('--soft-nms-sigma', type=float, default=None,
                         help='Gaussian soft-NMS sigma (pixels) for score decay; used after radius-NMS if provided')
     parser.add_argument('--score-thresh', type=float, default=None,
@@ -444,6 +469,10 @@ def parse_args():
                         help='tile overlap fraction (0-0.9), e.g., 0.25')
     parser.add_argument('--indices-file', type=str, default=None,
                         help='optional path to a file with one dataset index per line to use for inference')
+    parser.add_argument('--head-conv', type=int, default=256,
+                        help='detection head conv channels (must match training, default 256)')
+    parser.add_argument('--use-deconv', action='store_true', default=True,
+                        help='use deconv upsampling in head (must match training, default True)')
     return parser.parse_args()
 
 

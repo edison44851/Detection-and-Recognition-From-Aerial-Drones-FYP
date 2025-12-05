@@ -4,65 +4,105 @@ import torch.nn.functional as F
 
 
 class CenterHead(nn.Module):
-    """Simple center-based detection head.
+    """CenterNet-style center-based detection head.
 
-    Expects backbone features of shape [B, C, H, W] (C=768 by default).
-    Outputs:
-      - heatmap: [B,1,H,W] (sigmoid)
+    Upgraded to match CenterNet's proven architecture:
+    - Optional deconv/upsample layer to reduce stride (8→4)
+    - Wider heads with proper channel capacity (head_conv=256)
+    - Heatmap bias initialized to -2.19 for focal loss
+    - CenterNet-style 2-layer heads per task
+
+    Expects backbone features of shape [B, C, H, W] (C=768 by default at stride-8).
+    Outputs (at stride-4 if use_deconv=True, else stride-8):
+      - heatmap: [B,1,H,W] (sigmoid or logits)
       - size: [B,2,H,W] (w,h)
       - offset: [B,2,H,W]
     """
 
-    def __init__(self, in_channels=768, hidden=256, use_logits: bool = False, use_gn: bool = False):
+    def __init__(self, in_channels=768, head_conv=256, use_logits: bool = False, 
+                 use_gn: bool = False, use_deconv: bool = True):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, hidden, kernel_size=3, padding=1)
-        # Use GroupNorm when requested (more stable for small batch sizes)
-        if use_gn:
-            # choose a group count that divides hidden
-            for g in (32, 16, 8, 4, 2, 1):
-                if hidden % g == 0:
-                    gn_groups = g
-                    break
-            self.bn1 = nn.GroupNorm(gn_groups, hidden)
-        else:
-            self.bn1 = nn.BatchNorm2d(hidden)
-        self.relu = nn.ReLU(inplace=True)
-
-        self.heatmap_head = nn.Sequential(
-            nn.Conv2d(hidden, hidden // 2, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden // 2, 1, kernel_size=1)
-        )
-
-        # size predicts width and height
-        self.size_head = nn.Sequential(
-            nn.Conv2d(hidden, hidden // 2, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden // 2, 2, kernel_size=1)
-        )
-
-        # offset predicts fractional center offsets
-        self.offset_head = nn.Sequential(
-            nn.Conv2d(hidden, hidden // 2, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden // 2, 2, kernel_size=1)
-        )
-
         self.use_logits = use_logits
         self.use_gn = use_gn
+        self.use_deconv = use_deconv
+        
+        # Upsampling module: reduce stride from 8 to 4 (CenterNet uses stride-4 output)
+        if use_deconv:
+            # CenterNet-style deconv: ConvTranspose2d with stride=2
+            self.upsample = nn.Sequential(
+                nn.ConvTranspose2d(in_channels, 256, kernel_size=4, stride=2, 
+                                   padding=1, bias=False),
+                nn.BatchNorm2d(256) if not use_gn else self._make_gn(256),
+                nn.ReLU(inplace=True)
+            )
+        else:
+            # Lightweight alternative: bilinear upsample + conv
+            self.upsample = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+                nn.Conv2d(in_channels, 256, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(256) if not use_gn else self._make_gn(256),
+                nn.ReLU(inplace=True)
+            )
+        
+        # Heatmap head (CenterNet style: Conv 256→head_conv→1 with bias=-2.19)
+        self.heatmap_head = nn.Sequential(
+            nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(head_conv, 1, kernel_size=1, bias=True)
+        )
+        # CRITICAL: Initialize heatmap bias to -2.19 (ln(0.1/0.9) for focal loss)
+        nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
+
+        # Size head (width, height)
+        self.size_head = nn.Sequential(
+            nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(head_conv, 2, kernel_size=1, bias=True)
+        )
+
+        # Offset head (fractional center offsets)
+        self.offset_head = nn.Sequential(
+            nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(head_conv, 2, kernel_size=1, bias=True)
+        )
+        
+        # Initialize weights (Kaiming for conv, constant for BN/GN)
+        self._init_weights()
+    
+    def _make_gn(self, channels):
+        """Create GroupNorm with appropriate group count."""
+        for g in (32, 16, 8, 4, 2, 1):
+            if channels % g == 0:
+                return nn.GroupNorm(g, channels)
+        return nn.GroupNorm(1, channels)
+    
+    def _init_weights(self):
+        """Initialize weights following CenterNet convention."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                if m.weight is not None:
+                    nn.init.constant_(m.weight, 1)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.ConvTranspose2d):
+                # Deconv weights: use bilinear initialization
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        
+        # Re-initialize heatmap bias to -2.19 (done after general init)
+        nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
 
     def forward(self, feats):
-        x = self.conv1(feats)
-        x = self.bn1(x)
-        x = self.relu(x)
+        # Upsample features (stride 8 → 4)
+        x = self.upsample(feats)
 
+        # Task-specific heads
         heat = self.heatmap_head(x)
-        size = F.relu(self.size_head(x))
+        size = F.relu(self.size_head(x))  # Size must be non-negative
         offset = self.offset_head(x)
 
         # Return raw logits if requested; otherwise return sigmoid probabilities
@@ -74,7 +114,18 @@ class CenterHead(nn.Module):
 
 if __name__ == '__main__':
     # smoke test
-    net = CenterHead()
-    feats = torch.randn(2, 768, 32, 32)
+    print("Testing CenterHead with deconv (stride 8→4):")
+    net = CenterHead(in_channels=768, head_conv=256, use_deconv=True)
+    feats = torch.randn(2, 768, 32, 32)  # stride-8 input
     h, s, o = net(feats)
-    print('heat', h.shape, 'size', s.shape, 'offset', o.shape)
+    print(f'Input: {feats.shape}')
+    print(f'Heatmap: {h.shape} (should be 2x upsampled: 64x64)')
+    print(f'Size: {s.shape}')
+    print(f'Offset: {o.shape}')
+    print(f'Heatmap bias (should be -2.19): {net.heatmap_head[-1].bias.item():.4f}')
+    
+    print("\nTesting CenterHead without deconv (stride stays 8):")
+    net2 = CenterHead(in_channels=768, head_conv=256, use_deconv=False)
+    h2, s2, o2 = net2(feats)
+    print(f'Heatmap: {h2.shape} (should still be 2x upsampled via bilinear: 64x64)')
+    print(f'Heatmap bias: {net2.heatmap_head[-1].bias.item():.4f}')
