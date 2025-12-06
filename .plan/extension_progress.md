@@ -1,4 +1,4 @@
-## CenterNet-style Detection Head Upgrade (December 5, 2025)
+## CenterNet-style Detection Head Upgrade (2025-12-05)
 
 **Major architectural improvement: Option B Implementation**
 
@@ -159,7 +159,7 @@ Next steps
 
 ---
 
-# Extension Progress — 2025-11-25
+# Extension Progress (2025-11-25)
 
 **Summary**
 - **Scope:** Extended Free-Lunch (crowd counting) with a center-based detection branch, detection dataset targets, detection evaluation, and trainer improvements. Recently completed major code refactoring for maintainability and simplified task separation.
@@ -185,7 +185,9 @@ Next steps
   - Detection loss decreasing (31227 → 12657, 59% reduction) ✓
   - Counting GAME0 stable across epochs (~549, frozen weights working) ✓
 
-# Extension Progress — 2025-11-23
+---
+
+# Extension Progress (2025-11-23)
 
 **Summary**
 - **Scope:** Extended Free-Lunch (crowd counting) with a center-based detection branch, detection dataset targets, detection evaluation, trainer/CLI improvements for multi-task workflows, and tooling for visualization and distributed runs.
@@ -234,16 +236,9 @@ Next steps
 - GPU OOM when unfreezing the full Swin transformer: mitigations include keeping `--unfreeze-epoch -1`, reducing `--batch-size`, or enabling gradient checkpointing in the Swin implementation.
 - If detection AP does not improve, consider unfreezing backbone earlier (`--unfreeze-epoch`), tuning learning rate, or increasing `--det-weight` for stronger supervision.
 
-**Decisions requested / next actions**
-1. Add additional checkpoint key remapping rules (e.g., `heads.` -> `head.`) for more robust resume behavior.
-2. Add selective unfreeze (last-N transformer blocks) and/or gradient checkpointing to reduce memory pressure when unfreezing.
-3. Extend save strategies (combined multi-task scoring) or tune the `--save-by` default for your experiments.
-
-For implementation details, tests, and command examples see the markdowns in the `.plan/` directory.
-
 ---
 
-# Extension Progress — 2025-11-22
+# Extension Progress (2025-11-22)
 
 **Summary**
 - **Scope:** Extended the Free-Lunch counting code with a center-based detection branch, dataset targets, detection evaluation, multi‑GPU readiness, and checkpoint/resume improvements.
@@ -298,14 +293,3 @@ For implementation details, tests, and command examples see the markdowns in the
 	```bash
 	python3 tools/quick_train_check.py
 	```
-
-**Decisions requested / next action choices**
-1. Patch trainer so `--freeze-backbone` only freezes the Swin transformer (not `unet`/`reg_layer`).
-2. Add mapping rules for alternate checkpoint prefixes (e.g., `heads.` -> `head.`).
-3. Add a `--save-by` option or a combined multi-task scoring function for model selection.
-4. Implement selective unfreeze (last N blocks) or enable gradient checkpointing to reduce GPU memory when unfreezing.
-
-Tell me which option(s) you prefer and I will implement and re-run a short verification.
-
----
-

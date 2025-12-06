@@ -281,4 +281,3 @@ Benefits:
 3. **Architecture alone provides 10-20x improvement**: stride-4, 2-layer heads, proper bias
 4. **Combined effect reaches 122x improvement**: proves Option B was the right choice
 5. **Next frontier**: Fine-tune thresholds, NMS radius, and consider backbone unfreezing for +10-20% AP
-

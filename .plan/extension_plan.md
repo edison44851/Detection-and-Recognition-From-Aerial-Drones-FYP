@@ -118,7 +118,7 @@ These additions give flexible, opt-in controls to experiment with detection loss
 
 ---
 
-# Detection Head Architecture Analysis & Improvement Plan (December 5, 2025)
+# Detection Head Architecture Analysis & Improvement Plan (2025-12-06)
 
 ## Problem Statement
 
@@ -206,33 +206,9 @@ Per-task heads (same structure as ResNet, head_conv=256):
 | **Feature capacity** | Low (768→256→128) | High (2048→256→256) | Very high (DCN + multi-scale) |
 | **NMS in decode** | No (only eval-time) | Yes (max-pool 3×3) | Yes (max-pool 3×3) |
 
-## Recommended Improvements (Staged Options)
+## Improvements (Staged Options)
 
-### Option A: Minimal Fix (Quick Win, Low Risk)
-**Goal:** Fix initialization and widen heads without changing architecture significantly.
-
-**Changes:**
-1. **Heatmap bias initialization to -2.19** in `CenterHead.__init__`:
-   ```python
-   # In heatmap_head final conv layer
-   nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
-   ```
-2. **Increase head_conv from 128 to 256** (change default `hidden=256` to `hidden=512`, or add new param `head_conv=256`)
-3. **Add one more shared conv layer** before branching to heads:
-   ```python
-   self.conv1 = nn.Conv2d(in_channels, hidden, 3, padding=1)
-   self.bn1 = nn.BatchNorm2d(hidden)
-   self.conv2 = nn.Conv2d(hidden, hidden, 3, padding=1)  # NEW
-   self.bn2 = nn.BatchNorm2d(hidden)                      # NEW
-   ```
-
-**Pros:** Minimal code change, backwards-compatible (can load old checkpoints into wider head), fast to test  
-**Cons:** Still at stride-8, no upsampling, limited capacity improvement  
-**Expected improvement:** Better score calibration, slightly higher AP (still limited by stride-8 resolution)
-
----
-
-### Option B: CenterNet-Style Head with Deconv (Moderate Upgrade, Recommended)
+### CenterNet-Style Head with Deconv (Moderate Upgrade, Recommended)
 **Goal:** Match CenterNet's proven head design while keeping Swin+UNet backbone.
 
 **Architecture changes:**
@@ -312,97 +288,4 @@ Per-task heads (same structure as ResNet, head_conv=256):
 
 ---
 
-### Option C: Full CenterNet-Style Detection Branch with DCN (Advanced, Future Work)
-**Goal:** Maximum performance with deformable convolutions and multi-scale features.
-
-**Changes:**
-1. Install DCNv2: `pip install git+https://github.com/lbin/DCNv2.git` or use torchvision's `DeformConv2d` (requires PyTorch ≥1.9)
-2. Replace deconv with **DCN-based IDAUp** (hierarchical aggregation from CenterNet DLA)
-3. Add **multi-scale feature extraction** from Swin backbone (extract features at multiple stages)
-4. Use **deformable conv in heads** for adaptive receptive fields
-
-**Pros:** State-of-the-art detection performance, adaptive to object scale/shape  
-**Cons:** Complex implementation, higher compute cost, requires DCNv2 install, harder to debug  
-**Expected improvement:** Best possible AP, but diminishing returns vs Option B for aerial datasets
-
----
-
-## Implementation Plan (Option B Recommended)
-
-### Phase 1: Create New Head Module (1–2 hours)
-1. Create `Fine-tune/models/detection/centernet_head.py`:
-   - Implement `CenterNetHead` class with deconv/upsample option
-   - Add proper heatmap bias initialization (-2.19)
-   - Support `head_conv` and `use_deconv` arguments
-   - Add kaiming init for other conv layers
-
-2. Update `Fine-tune/models/detection/det_model.py`:
-   - Import `CenterNetHead`
-   - Add `DetectionHeadWrapper` constructor option to use `CenterNetHead` instead of `CenterHead`
-   - Support `--use-centernet-head` flag
-
-### Phase 2: Update Evaluation & NMS (30 min)
-1. Add `_nms` function to `Fine-tune/utils/detection_eval.py`
-2. Apply NMS before peak extraction in `heatmap_peaks()`
-3. Add `--nms-kernel` flag (default=3) to control NMS pooling size
-
-### Phase 3: Update Trainer & CLI (30 min)
-1. Add flags to `Fine-tune/train.py`:
-   - `--use-centernet-head`: Use CenterNet-style head instead of simple `CenterHead`
-   - `--head-conv`: Head conv channels (default 256)
-   - `--use-deconv`: Use ConvTranspose2d instead of bilinear upsample
-   - `--nms-kernel`: NMS kernel size for heatmap decode
-
-2. Update `Fine-tune/utils/dm_regression_trainer.py`:
-   - Modify `_create_model()` to instantiate `CenterNetHead` when flag is set
-   - Pass `head_conv` and `use_deconv` to head constructor
-
-### Phase 4: Testing & Validation (1 hour)
-1. Add unit test: `Fine-tune/utils/tests/test_centernet_head.py`
-   - Test output shapes with/without deconv
-   - Verify heatmap bias is -2.19
-   - Check gradient flow
-
-2. Run smoke test:
-   ```bash
-   python3 Fine-tune/train.py \
-     --data-dir .data/DroneRGBT_counting \
-     --save-dir ./checkpoints_test \
-     --task detection \
-     --use-centernet-head \
-     --head-conv 256 \
-     --use-deconv \
-     --batch-size 2 \
-     --max-epoch 2 \
-     --freeze-backbone
-   ```
-
-3. Compare head outputs on same input for old vs new head
-
-### Phase 5: Re-training & Benchmarking (pending user approval)
-Once implementation is validated:
-1. Train new checkpoint with `--use-centernet-head --head-conv 256 --use-deconv`
-2. Compare against baseline (1130-145629) on same test set
-3. Run post-train diagnostics and compare TP/FP/AP metrics
-4. Document results in `.plan/experiments.md`
-
-## Expected Outcomes
-
-### Minimal Fix (Option A)
-- **Training stability**: Better score calibration, fewer saturated predictions
-- **AP improvement**: +5–10% relative (from ~0.5% to ~5.5% AP)
-- **Time to implement**: <1 hour
-
-### CenterNet-Style Head (Option B) — RECOMMENDED
-- **Training stability**: Significantly improved convergence, proper focal loss behavior
-- **AP improvement**: +50–200% relative (from ~0.5% to 5–15% AP estimated)
-- **Spatial resolution**: Stride-4 output improves small-object localization
-- **Score calibration**: Predictions in 0.1–0.9 range (well-calibrated for focal loss)
-- **Time to implement**: 2–3 hours
-- **Backward compatibility**: Requires retraining, old checkpoints incompatible
-
-### Full DCN Branch (Option C)
-- **AP improvement**: +100–300% over baseline (10–20% AP estimated)
-- **Complexity**: High (DCN install, multi-scale logic, harder debugging)
-- **Time to implement**: 1–2 days
-- **Recommended**: Only if Option B results are insufficient
+(New section here)
