@@ -18,11 +18,11 @@ set -euo pipefail
 #     ./.tmp_posttrain/grid_1201-215341 \
 #     64 8
 
-CKPT=${1:-checkpoints/1130-145629_baseline/best_model.pth}
+CKPT=${1:-checkpoints/1205-155221_new_baseline/best_model.pth}
 DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_ROOT=${3:-./.tmp_posttrain/grid_1130-145629_baseline}
+OUT_ROOT=${3:-./.tmp_posttrain/grid_1205-155221_new_baseline}
 NUM=${4:-64}
-DOWNSAMPLE=${5:-8}
+DOWNSAMPLE=${5:-4}
 
 mkdir -p "$OUT_ROOT"
 
@@ -79,29 +79,29 @@ PARAM_TYPE[tile_overlap]=scalar
 
 # RAW mode
 RAW_PARAMS=(min_score score_thresh nms_radius soft_nms_sigma max_dets)
-RAW_values_min_score=(0.02)
+RAW_values_min_score=(0.01 0.02 0.03)
 RAW_values_score_thresh=(0.02 0.03 0.05)
-RAW_values_nms_radius=(0)
+RAW_values_nms_radius=(0 2 4)
 RAW_values_soft_nms_sigma=()
-RAW_values_max_dets=(1000)
+RAW_values_max_dets=(500 1000)
 
 # TILES mode
 TILES_PARAMS=(min_score score_thresh nms_radius soft_nms_sigma max_dets tile_size tile_overlap)
-TILES_values_min_score=(0.02)
+TILES_values_min_score=(0.01 0.02 0.03)
 TILES_values_score_thresh=(0.03 0.05)
-TILES_values_nms_radius=(4 6)
-TILES_values_soft_nms_sigma=(8 12)
-TILES_values_max_dets=(1000)
+TILES_values_nms_radius=(2 4 6)
+TILES_values_soft_nms_sigma=(6 8 12)
+TILES_values_max_dets=(600)
 TILES_values_tile_size=(512)
 TILES_values_tile_overlap=(0.25)
 
 # ORIG mode
 ORIG_PARAMS=(min_score score_thresh nms_radius soft_nms_sigma max_dets)
-ORIG_values_min_score=(0.02)
+ORIG_values_min_score=(0.01 0.02)
 ORIG_values_score_thresh=(0.05 0.08)
-ORIG_values_nms_radius=(4 6)
-ORIG_values_soft_nms_sigma=(8)
-ORIG_values_max_dets=(200)
+ORIG_values_nms_radius=(2 4)
+ORIG_values_soft_nms_sigma=(6 8)
+ORIG_values_max_dets=(200 400)
 
 # ------------------------------
 # Helpers
@@ -115,11 +115,16 @@ sanitize_val() {
 # get values array for mode+param into a nameref 'out'
 get_values() {
   local mode="$1"; local param="$2"; local __out="$3"
-  local var_name="${mode}_values_${param}[@]"
-  # shellcheck disable=SC1083,SC2128
-  local vals=( "${!var_name}" )
-  # return via nameref
-  eval "$__out=(\"${vals[@]}\")"
+  local var_name="${mode}_values_${param}"
+  # If array not defined, return empty
+  local -n out_ref="$__out"
+  if ! declare -p "$var_name" &>/dev/null; then
+    out_ref=()
+    return
+  fi
+  # Nameref to source array and copy
+  local -n src_ref="$var_name"
+  out_ref=("${src_ref[@]}")
 }
 
 # Build command args and directory suffix for a given param/value
@@ -138,7 +143,7 @@ build_arg_and_suffix() {
   else
     # skip if value list is empty marker
     if [[ -n "$val" ]]; then
-      args+=" $flag \"$val\""
+      args+=" $flag $val"
       suffix+="_${alias}_$(sanitize_val "$val")"
     fi
   fi
@@ -148,7 +153,8 @@ build_arg_and_suffix() {
 # Recursive combo builder
 recurse_combos() {
   local mode="$1"; shift
-  local -n params_ref="$1"; shift
+  local params_name="$1"; shift
+  local -n params_ref="$params_name"
   local idx="$1"; shift
   local accum_args="$1"; shift
   local accum_suffix="$1"; shift
@@ -198,14 +204,14 @@ recurse_combos() {
   get_values "$mode" "$param" values
   # if empty values, skip this param
   if (( ${#values[@]} == 0 )); then
-    recurse_combos "$mode" params_ref "$((idx+1))" "$accum_args" "$accum_suffix" "$out_dir_base" "$extra_fixed_args" "$indices_file"
+    recurse_combos "$mode" "$params_name" "$((idx+1))" "$accum_args" "$accum_suffix" "$out_dir_base" "$extra_fixed_args" "$indices_file"
     return
   fi
   for v in "${values[@]}"; do
     local built; built=$(build_arg_and_suffix "$param" "$v")
-    local arg_part="${built%%%|||*}"
-    local suf_part="${built##*|||}"
-    recurse_combos "$mode" params_ref "$((idx+1))" "$accum_args $arg_part" "$accum_suffix$suf_part" "$out_dir_base" "$extra_fixed_args" "$indices_file"
+    local arg_part="${built%%\|\|\|*}"
+    local suf_part="${built#*|||}"
+    recurse_combos "$mode" "$params_name" "$((idx+1))" "$accum_args $arg_part" "$accum_suffix$suf_part" "$out_dir_base" "$extra_fixed_args" "$indices_file"
   done
 }
 
