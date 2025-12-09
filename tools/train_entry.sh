@@ -21,7 +21,8 @@ set -euo pipefail
 # --- GPU / Distributed Training ---
 NPROC=4
 DEVICE="0,1,2,3"
-NUM_WORKERS=8
+NUM_WORKERS=4
+DDP_TIMEOUT=3600  # DDP watchdog timeout in seconds (default: 1800=30min, set to 3600=1hr)
 
 # --- Data & Paths ---
 DATA_DIR=".data/DroneRGBT_converted"
@@ -44,7 +45,7 @@ CROP_SIZE=224
 
 # --- Checkpointing & Early Stopping ---
 MAX_MODEL_NUM=1
-VAL_EPOCH=1
+VAL_EPOCH=2  # Validate every 2 epochs to reduce DDP sync overhead with prime-sized test set
 VAL_START=0
 SAVE_ALL_BEST=0
 DET_PATIENCE=10
@@ -59,6 +60,11 @@ HEAD_CONV=256
 USE_DECONV=1
 NMS_KERNEL=3
 USE_DET_ADAPTOR=1
+USE_FPN=1
+
+# --- Phase 1: Keypoint-Only Mode ---
+KEYPOINT_MODE=1
+FIXED_BOX_SIZE=16
 
 # --- Detection Loss Configuration ---
 DET_WEIGHT=1.0
@@ -66,7 +72,7 @@ DET_POS_WEIGHT=7.0
 USE_BCE_LOGITS=1
 DET_USE_GN=1
 DET_SIGMA=2.0
-HEAD_LR=0.001
+HEAD_LR=0.002
 
 # --- Focal Loss (Detection) ---
 USE_FOCAL_HEATMAP=1
@@ -74,9 +80,9 @@ FOCAL_ALPHA=0.25
 FOCAL_GAMMA=1.5
 
 # --- Hard Negative Mining & Size Loss ---
-DET_NEG_TOPK_RATIO=0.1
+DET_NEG_TOPK_RATIO=0.05
 USE_IOU_SIZE=1
-IOU_WEIGHT=0.5
+IOU_WEIGHT=0.3
 
 # --- Inference-time NMS Options ---
 EVAL_NMS="radius"
@@ -145,6 +151,10 @@ DETECTION HEAD (CenterNet-style):
   --use-deconv                 Use deconv upsampling (default: yes)
   --nms-kernel N               NMS kernel size (default: 3)
   --use-det-adaptor            Use detection adaptor (default: yes)
+
+PHASE 1 - KEYPOINT MODE:
+  --keypoint-mode              Enable keypoint-only mode (no size head)
+  --fixed-box-size N           Fixed box size in pixels for inference (default: 16)
 
 DETECTION LOSS:
   --det-weight W               Detection loss weight (default: 1.0)
@@ -279,6 +289,18 @@ while [[ $# -gt 0 ]]; do
       USE_DET_ADAPTOR=1; shift 1;;
     --no-det-adaptor)
       USE_DET_ADAPTOR=0; shift 1;;
+    --use-fpn)
+      USE_FPN=1; shift 1;;
+    --no-fpn)
+      USE_FPN=0; shift 1;;
+    
+    # Phase 1: Keypoint Mode
+    --keypoint-mode)
+      KEYPOINT_MODE=1; shift 1;;
+    --no-keypoint-mode)
+      KEYPOINT_MODE=0; shift 1;;
+    --fixed-box-size)
+      FIXED_BOX_SIZE="$2"; shift 2;;
     
     # Detection Loss
     --det-weight)
@@ -374,6 +396,7 @@ echo "--- GPU & Distributed ---"
 echo "  nproc:        $NPROC"
 echo "  device:       $DEVICE"
 echo "  num-workers:  $NUM_WORKERS"
+echo "  ddp-timeout:  ${DDP_TIMEOUT}s"
 echo ""
 echo "--- Data & Paths ---"
 echo "  data-dir:     $DATA_DIR"
@@ -408,6 +431,11 @@ echo "  head-conv:      $HEAD_CONV"
 echo "  use-deconv:     $USE_DECONV"
 echo "  nms-kernel:     $NMS_KERNEL"
 echo "  use-det-adaptor: $USE_DET_ADAPTOR"
+echo "  use-fpn:        $USE_FPN"
+echo ""
+echo "--- Phase 1: Keypoint Mode ---"
+echo "  keypoint-mode:   $KEYPOINT_MODE"
+echo "  fixed-box-size:  $FIXED_BOX_SIZE"
 echo ""
 echo "--- Detection Loss ---"
 echo "  det-weight:       $DET_WEIGHT"
@@ -476,6 +504,9 @@ if [[ "$NPROC" -eq 1 ]]; then
     $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" )
     --nms-kernel "${NMS_KERNEL}"
     $( [[ "$USE_DET_ADAPTOR" -eq 1 ]] && echo "--use-det-adaptor" )
+    $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" )
+    $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" )
+    --fixed-box-size "${FIXED_BOX_SIZE}"
     --det-weight "${DET_WEIGHT}"
     --det-pos-weight "${DET_POS_WEIGHT}"
     $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" )
@@ -501,6 +532,7 @@ if [[ "$NPROC" -eq 1 ]]; then
     --local_rank 0)
 else
   # Multi-GPU mode with torchrun
+  export TORCH_DISTRIBUTED_TIMEOUT="${DDP_TIMEOUT}"
   CMD=(torchrun --nproc_per_node="${NPROC}"
     Fine-tune/train.py
     --data-dir "${DATA_DIR}"
@@ -529,6 +561,9 @@ else
     $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" )
     --nms-kernel "${NMS_KERNEL}"
     $( [[ "$USE_DET_ADAPTOR" -eq 1 ]] && echo "--use-det-adaptor" )
+    $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" )
+    $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" )
+    --fixed-box-size "${FIXED_BOX_SIZE}"
     --det-weight "${DET_WEIGHT}"
     --det-pos-weight "${DET_POS_WEIGHT}"
     $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" )

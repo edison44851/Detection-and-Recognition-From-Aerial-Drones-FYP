@@ -288,4 +288,592 @@ Per-task heads (same structure as ResNet, head_conv=256):
 
 ---
 
-(New section here)
+# Multi-Scale Detection with FPN for Point Annotations (2025-12-09)
+
+## Context & Motivation
+
+Current status: Detection AP ~37% at epoch 4 with frozen backbone/UNet, using CenterNet-style head with fixed 16×16 pseudo-boxes.
+
+**Core Challenge Identified:**
+- DroneRGBT is a **crowd counting dataset** with **point annotations only** (no bounding boxes)
+- Current workaround: Fixed 16×16 boxes → size head has 0 variance to learn from (size loss stuck at ~0.71)
+- Drone altitude varies → **extreme scale variation** in aerial imagery (objects range from 8×8 to 40×40 pixels depending on height)
+- Single-scale detection at stride-4 output misses small objects and over-detects at wrong scales
+
+**Professor's Directive:** Adapt CenterNet for keypoint-style detection on point-only annotations.
+
+**Proposed Solution:** Implement multi-scale detection with Feature Pyramid Network (FPN) to handle scale variance, combined with density-aware pseudo-label generation.
+
+## Goals
+
+1. **Primary:** Improve detection AP from 37% to 50%+ by addressing scale variation
+2. **Secondary:** Make size head meaningful through density-based pseudo-labeling
+3. **Tertiary:** Maintain counting performance while adding multi-scale detection
+4. **Long-term:** Enable real bounding-box prediction if future annotations become available
+
+## Three-Phase Implementation Plan
+
+### Phase 1: Architecture Simplification & Baseline (1-2 days) — QUICK WIN
+
+**Rationale:** Current size head is learning nothing due to fixed boxes. Remove it to reduce noise and establish a clean baseline.
+
+**Changes:**
+1. **Modify `CenterHead`** (`Fine-tune/models/detection/center_head.py`):
+   - Add `--keypoint-only` mode: output only (heatmap, offset), skip size head
+   - Keep existing 3-head mode as default for backward compatibility
+   
+2. **Update inference** (`utils/detection_eval.py`):
+   - `heatmap_peaks` accepts `fixed_size=(w, h)` parameter for post-processing
+   - When `fixed_size` provided, assign uniform boxes to all detections
+   - Update AP computation to handle fixed-size mode
+
+3. **Trainer flags** (`train.py`, `dm_regression_trainer.py`):
+   - Add `--keypoint-mode` flag to toggle 2-head vs 3-head architecture
+   - Add `--fixed-box-size` (default 16) for inference-time box assignment
+   - Update loss computation to skip size loss when in keypoint mode
+
+**Expected Results:**
+- **Faster convergence** (33% fewer parameters in head)
+- **Similar or better AP** (37-40%) without noisy size predictions
+- **Cleaner visualization** with consistent box sizes
+
+**Validation:**
+```bash
+# Train keypoint-only baseline
+tools/train_entry.sh --data-dir .data/DroneRGBT_converted \
+  --task detection --keypoint-mode --fixed-box-size 16 \
+  --freeze-backbone --freeze-unet --freeze-counter \
+  --max-epoch 20 --batch-size 4 --nproc 4
+
+# Compare AP with current 3-head version
+python Fine-tune/test_detection_vis.py --ckpt <new_checkpoint> \
+  --keypoint-mode --fixed-box-size 16 --num 64
+```
+
+---
+
+### Phase 2: Multi-Scale FPN Implementation (3-5 days) — CORE UPGRADE
+
+**Rationale:** Swin Transformer already produces hierarchical features at multiple scales (stride 4, 8, 16). FPN fuses these for multi-scale detection.
+
+#### 2.1 Extract Multi-Scale Backbone Features
+
+**Modify `Swin_BM_RGBT`** (`Fine-tune/models/counting/swin_unet.py`):
+
+```python
+class Swin_BM_RGBT(nn.Module):
+    def forward(self, rgb, t, return_pyramid=False):
+        # ... existing backbone forward ...
+        
+        # Collect features from Swin stages
+        stage_features = []  # Will hold [C2, C3, C4] at strides [4, 8, 16]
+        
+        # After stage 2 (stride-4, channels=192)
+        stage_features.append(x2)  # Shape: [B, 192, H/4, W/4]
+        
+        # After stage 3 (stride-8, channels=384)
+        stage_features.append(x3)  # Shape: [B, 384, H/8, W/8]
+        
+        # After stage 4 (stride-16, channels=768)
+        stage_features.append(x4)  # Shape: [B, 768, H/16, W/16]
+        
+        # Existing U-Net fusion produces stride-8 output
+        fused = self.unet(...)  # [B, 768, H/8, W/8]
+        
+        if return_pyramid:
+            return fused, stage_features
+        return fused
+```
+
+**Implementation Notes:**
+- Extract features **after** each Swin stage (post-PatchMerging)
+- Return as list `[C2, C3, C4]` with channels `[192, 384, 768]`
+- Ensure features are in `[B, C, H, W]` format (transpose if needed)
+
+#### 2.2 Implement Lightweight FPN Module
+
+**Create `Fine-tune/models/detection/fpn.py`:**
+
+```python
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class SimpleFPN(nn.Module):
+    """Lightweight Feature Pyramid Network for multi-scale detection.
+    
+    Adapts multi-scale Swin features for CenterNet-style detection heads.
+    Uses top-down pathway with lateral connections (FPN paper, Lin et al. 2017).
+    
+    Args:
+        in_channels_list: List of input channels per level, e.g., [192, 384, 768]
+        out_channels: Unified output channels for all pyramid levels (default 256)
+        use_gn: Use GroupNorm instead of BatchNorm for small-batch stability
+    """
+    
+    def __init__(self, in_channels_list=[192, 384, 768], out_channels=256, use_gn=False):
+        super().__init__()
+        self.num_levels = len(in_channels_list)
+        
+        # Lateral 1×1 convs to reduce channels to uniform size
+        self.lateral_convs = nn.ModuleList([
+            self._make_lateral(c, out_channels, use_gn) 
+            for c in in_channels_list
+        ])
+        
+        # Smooth 3×3 convs after upsampling to reduce aliasing
+        self.fpn_convs = nn.ModuleList([
+            self._make_smooth(out_channels, use_gn)
+            for _ in range(self.num_levels)
+        ])
+        
+        self._init_weights()
+    
+    def _make_lateral(self, in_c, out_c, use_gn):
+        """1×1 conv + norm + relu for lateral connection"""
+        layers = [nn.Conv2d(in_c, out_c, 1, bias=False)]
+        if use_gn:
+            layers.append(nn.GroupNorm(32, out_c))
+        else:
+            layers.append(nn.BatchNorm2d(out_c))
+        layers.append(nn.ReLU(inplace=True))
+        return nn.Sequential(*layers)
+    
+    def _make_smooth(self, channels, use_gn):
+        """3×3 conv + norm + relu for smoothing after upsampling"""
+        layers = [nn.Conv2d(channels, channels, 3, padding=1, bias=False)]
+        if use_gn:
+            layers.append(nn.GroupNorm(32, channels))
+        else:
+            layers.append(nn.BatchNorm2d(channels))
+        layers.append(nn.ReLU(inplace=True))
+        return nn.Sequential(*layers)
+    
+    def _init_weights(self):
+        """Initialize conv weights with Kaiming normal"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+    
+    def forward(self, features):
+        """
+        Args:
+            features: List of [C2, C3, C4] tensors at strides [4, 8, 16]
+                      C2: [B, 192, H/4, W/4]
+                      C3: [B, 384, H/8, W/8]
+                      C4: [B, 768, H/16, W/16]
+        
+        Returns:
+            List of [P2, P3, P4] feature pyramids, all with `out_channels` channels
+        """
+        assert len(features) == self.num_levels, \
+            f"Expected {self.num_levels} feature levels, got {len(features)}"
+        
+        # Step 1: Apply lateral convs to unify channels
+        laterals = [conv(feat) for conv, feat in zip(self.lateral_convs, features)]
+        # laterals: [P2_lat, P3_lat, P4_lat], all [B, out_channels, H/stride, W/stride]
+        
+        # Step 2: Top-down pathway (coarse-to-fine)
+        for i in range(self.num_levels - 1, 0, -1):
+            # Upsample higher-level (coarser) feature
+            upsampled = F.interpolate(
+                laterals[i], 
+                size=laterals[i-1].shape[2:],  # Match spatial dims of next finer level
+                mode='nearest'  # CenterNet/FPN use nearest-neighbor for upsampling
+            )
+            # Add to finer-level lateral (element-wise fusion)
+            laterals[i-1] = laterals[i-1] + upsampled
+        
+        # Step 3: Apply smoothing convs to reduce aliasing
+        outputs = [conv(feat) for conv, feat in zip(self.fpn_convs, laterals)]
+        # outputs: [P2, P3, P4] at strides [4, 8, 16], all with out_channels
+        
+        return outputs
+```
+
+**Design Rationale:**
+- **Top-down pathway:** Coarse semantic features (P4) enrich fine-grained features (P2)
+- **Nearest-neighbor upsampling:** Avoids checkerboard artifacts (standard in FPN/CenterNet)
+- **3×3 smoothing:** Reduces upsampling aliasing, proven effective in FPN paper
+- **Unified channels:** All pyramid levels use same channel count → easier to attach heads
+
+#### 2.3 Multi-Scale Detection Head
+
+**Create `Fine-tune/models/detection/fpn_head.py`:**
+
+```python
+class MultiScaleCenterHead(nn.Module):
+    """CenterNet-style detection head applied to multiple FPN levels.
+    
+    Each pyramid level gets its own head instance to handle scale-specific features.
+    Predictions from all levels are merged during inference.
+    """
+    
+    def __init__(self, in_channels=256, head_conv=256, num_levels=3, 
+                 use_logits=False, use_gn=False):
+        super().__init__()
+        self.num_levels = num_levels
+        
+        # Create separate head for each pyramid level
+        # (shared weights would hurt performance due to scale differences)
+        self.heads = nn.ModuleList([
+            CenterHead(in_channels, head_conv, use_logits, use_gn, use_deconv=False)
+            for _ in range(num_levels)
+        ])
+    
+    def forward(self, pyramid_features):
+        """
+        Args:
+            pyramid_features: List of [P2, P3, P4], each [B, in_channels, H/stride, W/stride]
+        
+        Returns:
+            List of (heatmap, size, offset) tuples, one per pyramid level
+        """
+        outputs = []
+        for head, feat in zip(self.heads, pyramid_features):
+            hm, sz, off = head(feat)
+            outputs.append((hm, sz, off))
+        return outputs
+```
+
+#### 2.4 Multi-Scale Loss & Inference
+
+**Update `dm_regression_trainer.py`:**
+
+```python
+def compute_multiscale_detection_loss(self, outputs_pyramid, targets):
+    """Compute weighted detection loss across pyramid levels.
+    
+    Strategy: Weight losses by pyramid level based on expected object scales:
+      - P2 (stride-4): Best for small objects (8-16 px) → weight 0.5
+      - P3 (stride-8): Best for medium objects (16-32 px) → weight 0.3
+      - P4 (stride-16): Best for large objects (32+ px) → weight 0.2
+    """
+    total_loss = 0.0
+    level_weights = [0.5, 0.3, 0.2]  # P2, P3, P4
+    
+    for level_idx, (hm_pred, sz_pred, off_pred) in enumerate(outputs_pyramid):
+        stride = 4 * (2 ** level_idx)  # [4, 8, 16]
+        
+        # Generate targets at this stride
+        hm_tgt = self._generate_heatmap_target(targets, stride=stride)
+        sz_tgt = self._generate_size_target(targets, stride=stride)
+        off_tgt = self._generate_offset_target(targets, stride=stride)
+        
+        # Compute losses for this level
+        hm_loss = self.focal_loss(hm_pred, hm_tgt)
+        sz_loss = F.l1_loss(sz_pred, sz_tgt)
+        off_loss = F.l1_loss(off_pred, off_tgt)
+        
+        level_loss = hm_loss + 0.1 * sz_loss + off_loss
+        total_loss += level_weights[level_idx] * level_loss
+    
+    return total_loss
+```
+
+**Update `detection_eval.py` for multi-scale inference:**
+
+```python
+def multiscale_inference(outputs_pyramid, strides=[4, 8, 16], 
+                        min_score=0.01, nms_radius=4.0):
+    """Merge detections from multiple pyramid levels with scale-aware NMS.
+    
+    Args:
+        outputs_pyramid: List of (heatmap, size, offset) from each level
+        strides: Output stride for each pyramid level
+        min_score: Score threshold
+        nms_radius: Radius for NMS in pixel space
+    
+    Returns:
+        List of (x_px, y_px, w, h, score) detections
+    """
+    all_detections = []
+    
+    # Extract peaks from each level
+    for (hm, sz, off), stride in zip(outputs_pyramid, strides):
+        hm_np = hm.squeeze().cpu().numpy()
+        sz_np = sz.squeeze().cpu().numpy()
+        off_np = off.squeeze().cpu().numpy()
+        
+        # Get peaks from heatmap
+        peaks = heatmap_peaks(hm_np, min_score=min_score, use_nms=True)
+        
+        # Convert to pixel coordinates
+        for x_out, y_out, score in peaks:
+            # Apply offset
+            x_px = (x_out + off_np[0, int(y_out), int(x_out)]) * stride
+            y_px = (y_out + off_np[1, int(y_out), int(x_out)]) * stride
+            
+            # Get box size (multiply by stride to get pixel size)
+            w = sz_np[0, int(y_out), int(x_out)] * stride
+            h = sz_np[1, int(y_out), int(x_out)] * stride
+            
+            all_detections.append((x_px, y_px, w, h, score))
+    
+    # Apply cross-scale NMS (merge nearby detections from different levels)
+    final_detections = nms_merge(all_detections, radius=nms_radius)
+    
+    return final_detections
+```
+
+**Training Command:**
+```bash
+tools/train_entry.sh --data-dir .data/DroneRGBT_converted \
+  --task detection --use-fpn --fpn-levels 3 \
+  --freeze-backbone --freeze-unet --freeze-counter \
+  --max-epoch 50 --batch-size 2 --nproc 4 \
+  --det-weight 1.0 --head-lr 1e-3 --lr 1e-5
+```
+
+**Expected Results:**
+- **AP improvement:** 37% → 48-52% (multi-scale matching improves recall)
+- **Better small-object detection:** P2 captures 8-16px objects missed by single-scale
+- **Reduced false positives:** Scale-specific heads reduce cross-scale confusion
+
+---
+
+### Phase 3: Density-Aware Pseudo-Labeling (3-4 days) — ADVANCED
+
+**Rationale:** Make size head meaningful by generating variable-size pseudo-boxes based on local crowd density.
+
+#### 3.1 Analyze Ground Truth Density Statistics
+
+**Create `tools/analyze_density.py`:**
+
+```python
+"""Analyze point annotation density to derive size pseudo-labels.
+
+Hypothesis: In dense crowds, objects appear smaller (occlusion, perspective).
+            In sparse areas, objects are more visible and appear larger.
+
+Output: Density-to-size mapping function for pseudo-label generation.
+"""
+
+import numpy as np
+from scipy.spatial import distance_matrix
+import json
+
+def compute_local_density(points, radius=50):
+    """Count neighbors within radius for each point"""
+    if len(points) == 0:
+        return np.array([])
+    dists = distance_matrix(points, points)
+    densities = (dists < radius).sum(axis=1) - 1  # Exclude self
+    return densities
+
+def analyze_dataset(data_dir, split='train'):
+    """Compute density statistics across entire dataset"""
+    density_stats = []
+    
+    for gt_file in glob.glob(f"{data_dir}/{split}/*_GT.npy"):
+        points = np.load(gt_file)
+        if len(points) == 0:
+            continue
+        
+        densities = compute_local_density(points, radius=50)
+        density_stats.extend(densities.tolist())
+    
+    density_stats = np.array(density_stats)
+    
+    # Compute percentiles for binning
+    percentiles = [10, 25, 50, 75, 90]
+    bins = np.percentile(density_stats, percentiles)
+    
+    print(f"Density percentiles: {bins}")
+    # Example output: [0, 2, 5, 12, 25] neighbors within 50px
+    
+    # Derive size mapping (heuristic, can be refined with validation)
+    size_map = {
+        'sparse':  (0, bins[1], 20),    # 0-2 neighbors → 20px boxes
+        'medium':  (bins[1], bins[3], 16),  # 2-12 neighbors → 16px
+        'dense':   (bins[3], 100, 12),      # 12+ neighbors → 12px
+    }
+    
+    with open(f"{data_dir}/density_size_map.json", 'w') as f:
+        json.dump(size_map, f, indent=2)
+    
+    return size_map
+```
+
+#### 3.2 Generate Density-Aware Targets
+
+**Update `DetectionDataset.__getitem__`** (`Fine-tune/datasets/dm_detection.py`):
+
+```python
+class DetectionDataset(Dataset):
+    def __init__(self, root, split='train', ..., use_density_sizing=False):
+        # ... existing init ...
+        self.use_density_sizing = use_density_sizing
+        
+        if use_density_sizing:
+            # Load density-to-size mapping
+            map_file = os.path.join(root, 'density_size_map.json')
+            with open(map_file) as f:
+                self.density_map = json.load(f)
+    
+    def _compute_point_size(self, points, point_idx):
+        """Compute pseudo-box size based on local density"""
+        if not self.use_density_sizing:
+            return 16.0 / self.output_stride  # Fixed fallback
+        
+        # Count neighbors within 50px
+        p = points[point_idx]
+        dists = np.linalg.norm(points - p, axis=1)
+        neighbors = (dists < 50).sum() - 1
+        
+        # Map density to size
+        for category, (min_n, max_n, size_px) in self.density_map.items():
+            if min_n <= neighbors < max_n:
+                return size_px / self.output_stride
+        
+        return 16.0 / self.output_stride  # Default
+    
+    def __getitem__(self, idx):
+        # ... existing code ...
+        
+        for i, p in enumerate(points):
+            # ... existing heatmap/offset code ...
+            
+            # Density-aware size assignment
+            size_val = self._compute_point_size(points, i)
+            size_map[0, iy, ix] = max(size_map[0, iy, ix], size_val)
+            size_map[1, iy, ix] = max(size_map[1, iy, ix], size_val)
+        
+        # ... rest of __getitem__ ...
+```
+
+**Workflow:**
+1. Run `tools/analyze_density.py` on training set → generates `density_size_map.json`
+2. Train with `--use-density-sizing` flag to enable variable pseudo-labels
+3. Size head now learns meaningful density → size mapping
+
+**Expected Results:**
+- **Size loss convergence:** From ~0.71 (stuck) to ~0.3-0.4 (learning)
+- **Better box fitting:** Predicted boxes match actual object scales
+- **AP improvement:** 2-3% gain from better IoU matching
+
+---
+
+## Integration & Validation Strategy
+
+### Incremental Testing
+1. **Phase 1 baseline:** Verify keypoint-only mode matches 3-head performance
+2. **Phase 2 FPN:** Compare single-scale vs multi-scale AP on same checkpoint
+3. **Phase 3 density:** A/B test fixed vs density-aware sizing
+
+### Metrics to Track
+- **Primary:** AP @ 8px distance threshold (current metric)
+- **Secondary:** AP @ [4px, 8px, 12px] for scale sensitivity
+- **Tertiary:** Precision-Recall curves per pyramid level
+- **Counting metrics:** Ensure MAE/RMSE don't degrade (multi-task stability)
+
+### Ablation Studies
+| Experiment | Keypoint-Only | FPN | Density Sizing | Expected AP |
+|------------|---------------|-----|----------------|-------------|
+| Baseline   | ✗             | ✗   | ✗              | 37%         |
+| E1         | ✓             | ✗   | ✗              | 38-40%      |
+| E2         | ✓             | ✓   | ✗              | 48-52%      |
+| E3         | ✓             | ✓   | ✓              | 50-55%      |
+
+### Fallback Plan
+If FPN implementation proves too complex or memory-intensive:
+- **Fallback A:** Single-scale with multi-scale test-time augmentation (TTA)
+  - Inference at [0.8×, 1.0×, 1.2×] scales, merge detections
+  - Simpler, no training changes, ~3-5% AP gain
+  
+- **Fallback B:** Deformable convolutions in head (DCNv2)
+  - Add deformable conv to `CenterHead` for adaptive receptive fields
+  - Handles scale variation without multi-scale features
+  - 1-2% AP gain, moderate complexity
+
+## Timeline & Milestones
+
+**Week 1 (Dec 9-15):**
+- [ ] Implement Phase 1 (keypoint-only mode)
+- [ ] Train baseline and validate AP consistency
+- [ ] Document results in `.plan/experiments.md`
+
+**Week 2 (Dec 16-22):**
+- [ ] Implement FPN module and multi-scale head
+- [ ] Modify `Swin_BM_RGBT` to return pyramid features
+- [ ] Train multi-scale model (50 epochs)
+- [ ] Compare AP with single-scale baseline
+
+**Week 3 (Dec 23-29):**
+- [ ] Run density analysis on training set
+- [ ] Implement density-aware pseudo-labeling
+- [ ] Train with variable sizing
+- [ ] Final ablation studies
+
+**Week 4 (Dec 30 - Jan 5):**
+- [ ] Optimize hyperparameters (level weights, NMS params)
+- [ ] Generate final visualizations for report
+- [ ] Write methodology section for thesis
+
+## References & Prior Art
+
+1. **CenterNet (Objects as Points)** — Zhou et al., 2019
+   - Keypoint-based detection without anchors
+   - Heatmap + offset + size regression
+   
+2. **Feature Pyramid Networks** — Lin et al., 2017
+   - Top-down pathway with lateral connections
+   - Multi-scale object detection
+
+3. **Focal Loss** — Lin et al., 2017 (RetinaNet)
+   - Addresses class imbalance in dense prediction
+   - Already integrated via `--use-focal-heatmap`
+
+4. **CenterNet2** — Zhou et al., 2021
+   - Integrates FPN with CenterNet
+   - Proves effectiveness of multi-scale center-based detection
+
+5. **SAHI (Slicing Aided Hyper Inference)** — Akyon et al., 2022
+   - Tiled inference for small objects
+   - Already partially supported via `--tile-size`
+
+## Success Criteria
+
+**Minimum Viable (Phase 1+2):**
+- ✓ AP ≥ 45% (20% relative improvement over baseline)
+- ✓ Maintains counting MAE within 5% of frozen-head baseline
+- ✓ Clean code, documented, reproducible
+
+**Target (Phase 1+2+3):**
+- ✓ AP ≥ 50% (35% relative improvement)
+- ✓ Size head converges (loss < 0.5)
+- ✓ Visualizations show scale-appropriate boxes
+
+**Stretch (with refinements):**
+- ✓ AP ≥ 55% (competitive with supervised methods)
+- ✓ Real-time inference (>10 FPS on single GPU)
+- ✓ Generalizes to other aerial datasets (e.g., VisDrone)
+
+---
+
+## Risk Assessment & Mitigation
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| FPN memory overflow | Medium | High | Use FPN with 2 levels (P2+P3), skip P4; Enable gradient checkpointing |
+| Multi-scale NMS complexity | Low | Medium | Start with simple radius NMS, add Soft-NMS if needed |
+| Density analysis noisy | Medium | Low | Use robust statistics (median, IQR), validate on held-out set |
+| Training instability | Low | Medium | Use gradient clipping, warmup scheduler, monitor grad norms |
+| Timeline overrun | Medium | High | Prioritize Phase 1+2, make Phase 3 optional if needed |
+
+## Next Actions (Immediate)
+
+1. **Today (Dec 9):** 
+   - Create `fpn.py` and `fpn_head.py` skeletons
+   - Add `--keypoint-mode` flag to `train.py`
+   
+2. **Tomorrow (Dec 10):**
+   - Implement Phase 1 keypoint-only head
+   - Train overnight baseline
+
+3. **This Week:**
+   - Complete FPN implementation
+   - First multi-scale training run
+
+**Status:** Ready to begin implementation. All design decisions documented and rationale clear.

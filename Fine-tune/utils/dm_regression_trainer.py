@@ -200,9 +200,11 @@ class RegTrainer(Trainer):
             # Defer detection head attachment until after checkpoint loading
             head_conv = getattr(args, 'head_conv', 256)
             use_deconv = getattr(args, 'use_deconv', False)
+            keypoint_only = getattr(args, 'keypoint_mode', False)
             self._deferred_det_head = DetectionHeadWrapper(
                 in_channels=768, hidden=256, 
-                head_conv=head_conv, use_deconv=use_deconv
+                head_conv=head_conv, use_deconv=use_deconv, keypoint_only=keypoint_only,
+                use_fpn=getattr(args, 'use_fpn', False)
             )
             # Pass use_logits and use_gn to the underlying CenterHead
             self._deferred_det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
@@ -659,12 +661,16 @@ class RegTrainer(Trainer):
     def _compute_detection_losses(self, heat_pred, size_pred, offset_pred, detection_targets):
         """Compute all detection-related losses
         
+        Phase 1 Update: Skip size loss if keypoint_mode is enabled and size_pred is None
+        
         Returns:
             Total detection loss (weighted)
         """
         heat_target = detection_targets['heat_target']
         size_target = detection_targets['size_target']
         offset_target = detection_targets['offset_target']
+        
+        keypoint_mode = getattr(self.args, 'keypoint_mode', False)
         
         # Heatmap loss: BCE or focal-on-logits
         # heat_pred and heat_target are [B,1,H,W]
@@ -699,21 +705,27 @@ class RegTrainer(Trainer):
         # Size/offset only at positive locations
         num_pos = pos_mask.sum().clamp(min=1.0)
         mask2 = pos_mask.repeat(1, 2, 1, 1)
-        size_l = self.l1(size_pred * mask2, size_target * mask2) / num_pos
+        
+        # PHASE 1: Skip size loss in keypoint mode
+        if keypoint_mode or size_pred is None:
+            size_l = torch.tensor(0.0, device=self.device)
+            iou_l = torch.tensor(0.0, device=self.device)
+        else:
+            size_l = self.l1(size_pred * mask2, size_target * mask2) / num_pos
+            # Optional IoU size loss (same-center approx at positive locations)
+            iou_l = torch.tensor(0.0, device=self.device)
+            if bool(getattr(self.args, 'use_iou_size', False)):
+                wp = (size_pred[:, 0:1] * pos_mask).view(size_pred.size(0), -1)
+                hp = (size_pred[:, 1:2] * pos_mask).view(size_pred.size(0), -1)
+                wg = (size_target[:, 0:1] * pos_mask).view(size_target.size(0), -1)
+                hg = (size_target[:, 1:2] * pos_mask).view(size_target.size(0), -1)
+                inter = torch.minimum(wp, wg) * torch.minimum(hp, hg)
+                union = (wp * hp + wg * hg - inter).clamp(min=1e-6)
+                iou = (inter / union)
+                iou_l = (1.0 - iou).sum() / num_pos
+                size_l = size_l + float(getattr(self.args, 'iou_weight', 0.5)) * iou_l
+        
         off_l = self.l1(offset_pred * mask2, offset_target * mask2) / num_pos
-
-        # Optional IoU size loss (same-center approx at positive locations)
-        iou_l = torch.tensor(0.0, device=self.device)
-        if bool(getattr(self.args, 'use_iou_size', False)):
-            wp = (size_pred[:, 0:1] * pos_mask).view(size_pred.size(0), -1)
-            hp = (size_pred[:, 1:2] * pos_mask).view(size_pred.size(0), -1)
-            wg = (size_target[:, 0:1] * pos_mask).view(size_target.size(0), -1)
-            hg = (size_target[:, 1:2] * pos_mask).view(size_target.size(0), -1)
-            inter = torch.minimum(wp, wg) * torch.minimum(hp, hg)
-            union = (wp * hp + wg * hg - inter).clamp(min=1e-6)
-            iou = (inter / union)
-            iou_l = (1.0 - iou).sum() / num_pos
-            size_l = size_l + float(getattr(self.args, 'iou_weight', 0.5)) * iou_l
 
         det_loss = (hm_loss + size_l + off_l) * self.args.det_weight
 

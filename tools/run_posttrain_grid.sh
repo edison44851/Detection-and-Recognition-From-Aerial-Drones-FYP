@@ -66,10 +66,14 @@ PARAM_FLAG[tile_overlap]=--tile-overlap
 PARAM_ALIAS[tile_overlap]=ov
 PARAM_TYPE[tile_overlap]=scalar
 
-# Example boolean flag (not used by default):
-# PARAM_FLAG[use_xyz]=--use-xyz
-# PARAM_ALIAS[use_xyz]=xyz
-# PARAM_TYPE[use_xyz]=bool
+# Phase 1: Keypoint mode parameters
+PARAM_FLAG[keypoint_mode]=--keypoint-mode
+PARAM_ALIAS[keypoint_mode]=kp
+PARAM_TYPE[keypoint_mode]=bool
+
+PARAM_FLAG[fixed_box_size]=--fixed-box-size
+PARAM_ALIAS[fixed_box_size]=fb
+PARAM_TYPE[fixed_box_size]=scalar
 
 # ------------------------------
 # Mode-specific configuration
@@ -174,11 +178,13 @@ recurse_combos() {
       --num "$NUM" --downsample-ratio "$DOWNSAMPLE"
       --ap-dist-thresh 8.0
     )
-    # add extra fixed args first
+    # add extra fixed args first (including keypoint mode if enabled)
     if [[ -n "$extra_fixed_args" ]]; then
       # shellcheck disable=SC2206
       cmd+=( $extra_fixed_args )
     fi
+    # Add head architecture flags (should match training config)
+    cmd+=( --head-conv 256 --use-deconv )
     # add accumulated sweep args
     if [[ -n "$accum_args" ]]; then
       # shellcheck disable=SC2206

@@ -6,19 +6,22 @@ set -euo pipefail
 # 2) tiled (SAHI-style)
 # 3) default visualization (moderate threshold + NMS)
 
-CKPT=${1:-checkpoints/1205-155221_new_baseline/best_model.pth}
+CKPT=${1:-checkpoints/1209-205427/best_model.pth}
 DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_DIR=${3:-./.tmp_posttrain/1205-155221_new_baseline}
+OUT_DIR=${3:-./.tmp_posttrain/1209-205427_threshold_001}
 NUM=${4:-64}
 DOWNSAMPLE=${5:-4}
 
 MIN_SCORE_RAW=0.01
 MIN_SCORE_TILE=0.01
-MAX_DETS=1000
-NMS_RADIUS=4.0
+MAX_DETS=150
+NMS_RADIUS=2.0
 NMS_KERNEL=3
 HEAD_CONV=256
 USE_DECONV=1
+KEYPOINT_MODE=0
+FIXED_BOX_SIZE=16
+USE_FPN=1
 SCORE_THRESH_RAW=0.01
 SCORE_THRESH_TILE=0.01
 SCORE_THRESH_ORIG=0.01
@@ -44,6 +47,9 @@ python3 Fine-tune/test_detection_vis.py \
   --min-score "$MIN_SCORE_RAW" --ap-dist-thresh 8.0 \
   --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS" --nms-kernel "$NMS_KERNEL" \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
+  $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
+  $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
+  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_RAW:+--score-thresh "$SCORE_THRESH_RAW"} \
   ${SOFT_NMS_SIGMA_RAW:+--soft-nms-sigma "$SOFT_NMS_SIGMA_RAW"} \
   --scores-csv "scores.csv" --scores-hist "scores.png"
@@ -58,6 +64,9 @@ python3 Fine-tune/test_detection_vis.py \
   --min-score "$MIN_SCORE_TILE" --ap-dist-thresh 8.0 \
   --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS" --nms-kernel "$NMS_KERNEL" \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
+  $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
+  $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
+  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_TILE:+--score-thresh "$SCORE_THRESH_TILE"} \
   ${SOFT_NMS_SIGMA_TILE:+--soft-nms-sigma "$SOFT_NMS_SIGMA_TILE"} \
   --tile-size "$TILE_SIZE" --tile-overlap "$TILE_OVER" \
@@ -73,6 +82,9 @@ python3 Fine-tune/test_detection_vis.py \
   --min-score "$SCORE_THRESH_ORIG" --ap-dist-thresh 8.0 \
   --max-dets 200 --nms-radius "$NMS_RADIUS" --nms-kernel "$NMS_KERNEL" \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
+  $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
+  $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
+  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_ORIG:+--score-thresh "$SCORE_THRESH_ORIG"} \
   ${SOFT_NMS_SIGMA_ORIG:+--soft-nms-sigma "$SOFT_NMS_SIGMA_ORIG"} \
   --indices-file "$INDICES_FILE" \

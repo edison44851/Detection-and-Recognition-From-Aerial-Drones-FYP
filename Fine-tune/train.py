@@ -97,6 +97,14 @@ def parse_args():
                         help='use ConvTranspose2d for upsampling (CenterNet style); else use bilinear+conv')
     parser.add_argument('--nms-kernel', type=int, default=3,
                         help='NMS kernel size for heatmap decode (default 3, CenterNet uses 3)')
+    parser.add_argument('--use-fpn', action='store_true',
+                        help='enable lightweight FPN neck (stride-4 fused feature with pooled context)')
+    
+    # Phase 1: Keypoint-only mode for point annotations
+    parser.add_argument('--keypoint-mode', action='store_true',
+                        help='keypoint-only mode: use only heatmap + offset heads, skip size head (for point annotations)')
+    parser.add_argument('--fixed-box-size', type=int, default=16,
+                        help='fixed box size (pixels) for inference when using keypoint-mode (default 16)')
                         
     # For DM-Count
     parser.add_argument('--wot', type=float, default=0.1, help='weight on OT loss')

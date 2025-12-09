@@ -11,20 +11,22 @@ class CenterHead(nn.Module):
     - Wider heads with proper channel capacity (head_conv=256)
     - Heatmap bias initialized to -2.19 for focal loss
     - CenterNet-style 2-layer heads per task
+    - **NEW (Phase 1)**: keypoint_only mode - skip size head for point annotations
 
     Expects backbone features of shape [B, C, H, W] (C=768 by default at stride-8).
     Outputs (at stride-4 if use_deconv=True, else stride-8):
       - heatmap: [B,1,H,W] (sigmoid or logits)
-      - size: [B,2,H,W] (w,h)
+      - size: [B,2,H,W] (w,h) — OR None if keypoint_only=True
       - offset: [B,2,H,W]
     """
 
     def __init__(self, in_channels=768, head_conv=256, use_logits: bool = False, 
-                 use_gn: bool = False, use_deconv: bool = True):
+                 use_gn: bool = False, use_deconv: bool = True, keypoint_only: bool = False):
         super().__init__()
         self.use_logits = use_logits
         self.use_gn = use_gn
         self.use_deconv = use_deconv
+        self.keypoint_only = keypoint_only
         
         # Upsampling module: reduce stride from 8 to 4 (CenterNet uses stride-4 output)
         if use_deconv:
@@ -53,12 +55,15 @@ class CenterHead(nn.Module):
         # CRITICAL: Initialize heatmap bias to -2.19 (ln(0.1/0.9) for focal loss)
         nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
 
-        # Size head (width, height)
-        self.size_head = nn.Sequential(
-            nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(head_conv, 2, kernel_size=1, bias=True)
-        )
+        # Size head (width, height) — SKIP in keypoint-only mode
+        if not self.keypoint_only:
+            self.size_head = nn.Sequential(
+                nn.Conv2d(256, head_conv, kernel_size=3, padding=1, bias=True),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(head_conv, 2, kernel_size=1, bias=True)
+            )
+        else:
+            self.size_head = None
 
         # Offset head (fractional center offsets)
         self.offset_head = nn.Sequential(
@@ -102,7 +107,13 @@ class CenterHead(nn.Module):
 
         # Task-specific heads
         heat = self.heatmap_head(x)
-        size = F.relu(self.size_head(x))  # Size must be non-negative
+        
+        # Size head: skip if keypoint_only mode
+        if self.keypoint_only:
+            size = None
+        else:
+            size = F.relu(self.size_head(x))  # Size must be non-negative
+        
         offset = self.offset_head(x)
 
         # Return raw logits if requested; otherwise return sigmoid probabilities

@@ -23,7 +23,7 @@ import cv2
 
 from datasets.dm_detection import DetectionDataset
 from models.counting.swin_unet import Swin_BM_RGBT
-from models.detection.center_head import CenterHead
+from models.detection.det_model import DetectionHeadWrapper
 from utils.detection_eval import heatmap_peaks
 
 
@@ -186,11 +186,15 @@ def infer_and_visualize(args):
         nn.ReLU(inplace=True)
     )
     
-    # Create CenterHead with parameters matching training configuration
-    # Default to CenterNet-style settings: head_conv=256, use_deconv=True
+    # Create detection head wrapper with parameters matching training configuration
     head_conv = getattr(args, 'head_conv', 256)
     use_deconv = getattr(args, 'use_deconv', True)
-    det_head = CenterHead(in_channels=768, head_conv=head_conv, use_deconv=use_deconv)
+    use_fpn = getattr(args, 'use_fpn', False)
+    det_head = DetectionHeadWrapper(in_channels=768, head_conv=head_conv, use_deconv=use_deconv,
+                                    keypoint_only=getattr(args, 'keypoint_mode', False), use_fpn=use_fpn)
+    # align logits/GN flags if present on args (optional; backward compatible)
+    det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
+    det_head.head.use_gn = getattr(args, 'det_use_gn', False)
     try:
         model.attach_det_head(det_head)
     except Exception:
@@ -473,6 +477,12 @@ def parse_args():
                         help='detection head conv channels (must match training, default 256)')
     parser.add_argument('--use-deconv', action='store_true', default=True,
                         help='use deconv upsampling in head (must match training, default True)')
+    parser.add_argument('--use-fpn', action='store_true',
+                        help='enable FPN neck (must match training)')
+    parser.add_argument('--keypoint-mode', action='store_true',
+                        help='keypoint-only mode: model has no size head (Phase 1)')
+    parser.add_argument('--fixed-box-size', type=int, default=16,
+                        help='fixed box size (pixels) to assign when using keypoint-mode (default 16)')
     return parser.parse_args()
 
 

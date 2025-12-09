@@ -1,3 +1,47 @@
+## Phase 2 – FPN Keypoint Multi-Scale (2025-12-09)
+
+**Status:** Completed run with SimpleFPN + keypoint-only head (frozen backbone/UNet/counter, head-only training). Achieved strong FP reduction and stable DDP eval.
+
+**Training outcome (ckpt `checkpoints/1209-205427/best_model.pth`):**
+- Best AP@8px: **0.4799** at epoch 30 (early-stop triggered at epoch 50 after plateau)
+- Config highlights: `use_fpn=1`, `keypoint_mode=1`, `head_conv=256`, `use_deconv=1`, `fixed_box_size=16`, `batch_size=1`, freeze all features
+- Det loss ~0.12 with grad norms ~1.4; counting branch stayed frozen
+
+**Inference/diagnostics (`.tmp_posttrain/1209-205427/raw`):**
+- Totals: TP=1142 / FP=910 / FN=840 → precision ≈0.56, recall ≈0.58, F1 ≈0.57
+- FP count collapsed vs Phase 1 tuned run (7,453 → 910) while keeping similar recall; visuals look clean across raw/tiles/orig overlays
+- Assets: `scores.csv`, `scores.png`, `report.txt`, per-image overlays in `raw/`, `tiles/`, and `orig/`
+
+**Next suggestions:**
+- Sweep small head LR (e.g., 0.002–0.0025) and det_pos_weight (6–8) to see if AP can edge past 0.48 while retaining low FP
+- Keep eval every 2 epochs and the 1h DDP timeout to avoid watchdog kills on the 1,807-image test set
+
+---
+
+## Phase 1 – Keypoint-Only Baseline (2025-12-09)
+
+**Status:** Complete and stable with frozen backbone/UNet/counter. Keypoint-only head is active; size head removed from graph; DDP reduction issues resolved.
+
+**Training outcome (ckpt `checkpoints/1209-164448/best_model.pth`):**
+- Best AP@8px ≈ **0.52** (epoch 23) with head-only training (`det_pos_weight=7`, `head_lr=0.002`, `det_neg_topk_ratio=0.05`, radius NMS eval).
+- Train loss (det): ~0.12 by epoch 23; grad norms ~1.4; counting branch untouched.
+
+**Inference/diagnostics:**
+- Baseline loose thresholds (`score_thresh=0.01`, `max_dets=1000`) produced TP=945 / FP=10,904 / FN=1,037 (precision ~8%, recall ~48%).
+- Tuned thresholds (`.tmp_posttrain/1209-164448_kp_tuned`): TP=1047 / FP=7,453 / FN=935 (precision ~12%, recall ~53%), showing large FP reduction with higher score filtering.
+- Keypoint mode matches baseline or better under the same settings; ~4.33M params (12% fewer than 3-head version).
+
+**What changed for Phase 1:**
+- `CenterHead`/`DetectionHeadWrapper`: keypoint-only flag removes size head entirely; forward returns `(heat, None, offset)`.
+- Trainer: size loss skipped; DDP wraps with active params only; early-stop by AP when no val split.
+- CLI/scripts: `--keypoint-mode`, `--fixed-box-size`, train/test wrappers updated; diagnostics accept the new flags.
+
+**Next suggestions (non-invasive):**
+- Keep stricter diagnostics defaults (score threshold ≥0.1–0.15, `max_dets` ~150–200, `nms_radius` ~2–4) to curb FPs.
+- Proceed to Phase 2 (FPN multi-scale) for further AP gains without unfreezing backbone.
+
+---
+
 ## CenterNet-style Detection Head Upgrade (2025-12-05)
 
 **Major architectural improvement: Option B Implementation**
