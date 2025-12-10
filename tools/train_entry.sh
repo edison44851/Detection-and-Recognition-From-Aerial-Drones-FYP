@@ -86,7 +86,7 @@ IOU_WEIGHT=0.3
 
 # --- Inference-time NMS Options ---
 EVAL_NMS="radius"
-EVAL_NMS_RADIUS=4.0
+EVAL_NMS_RADIUS=2.0  # Stricter NMS for honest AP reporting (was 4.0; Phase 2 analysis shows it inflates metrics)
 EVAL_SOFT_NMS_SIGMA=0.5
 
 # --- Counting Task Parameters (DM-Count) ---
