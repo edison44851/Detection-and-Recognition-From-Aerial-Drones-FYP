@@ -1,5 +1,35 @@
 import numpy as np
 from typing import List, Tuple
+import torch
+import torch.nn.functional as F
+
+
+def _nms(heatmap, kernel=3):
+    """Apply max-pooling NMS to heatmap (CenterNet style).
+    
+    Args:
+        heatmap: numpy array [H, W] or torch tensor [B, C, H, W]
+        kernel: NMS kernel size (default 3)
+    
+    Returns:
+        NMS-filtered heatmap (same type/shape as input)
+    """
+    is_numpy = isinstance(heatmap, np.ndarray)
+    
+    if is_numpy:
+        # Convert to torch for max_pool2d
+        hm_torch = torch.from_numpy(heatmap).unsqueeze(0).unsqueeze(0).float()
+    else:
+        hm_torch = heatmap
+    
+    pad = (kernel - 1) // 2
+    hmax = F.max_pool2d(hm_torch, kernel_size=kernel, stride=1, padding=pad)
+    keep = (hmax == hm_torch).float()
+    result = hm_torch * keep
+    
+    if is_numpy:
+        return result.squeeze().numpy()
+    return result
 
 
 def _is_local_maximum(hm: np.ndarray, y: int, x: int) -> bool:
@@ -14,30 +44,88 @@ def _is_local_maximum(hm: np.ndarray, y: int, x: int) -> bool:
     return True
 
 
-def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: int = 200) -> List[Tuple[float, float, float]]:
-    """Simple local-maximum peak extraction.
+def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: int = 200, 
+                   use_nms: bool = True, nms_kernel: int = 3, adaptive_threshold: bool = True) -> List[Tuple[float, float, float]]:
+    """Extract peaks from heatmap with optional NMS (CenterNet style).
 
-    Returns list of (x_out, y_out, score) in output-grid coordinates (cols, rows).
+    Args:
+        heatmap: 2D numpy array [H, W]
+        min_score: minimum score threshold
+        max_detections: maximum number of detections to return
+        use_nms: whether to apply max-pooling NMS before peak extraction
+        nms_kernel: kernel size for NMS (default 3)
+        adaptive_threshold: whether to use adaptive threshold based on image statistics
+
+    Returns:
+        List of (x_out, y_out, score) in output-grid coordinates (cols, rows).
     """
     H, W = heatmap.shape
-    peaks = []
-    for y in range(H):
-        for x in range(W):
-            s = float(heatmap[y, x])
-            if s <= min_score:
-                continue
-            if _is_local_maximum(heatmap, y, x):
-                peaks.append((x, y, s))
-    if not peaks:
+    if H == 0 or W == 0:
         return []
-    peaks.sort(key=lambda x: x[2], reverse=True)
-    return peaks[:max_detections]
+    
+    # Apply NMS if requested (CenterNet uses this to suppress nearby duplicates)
+    if use_nms:
+        heatmap = _nms(heatmap, kernel=nms_kernel)
+    
+    # NEW: Adaptive thresholding for drone images
+    if adaptive_threshold:
+        # Remove very low values first
+        heatmap_clean = heatmap.copy()
+        heatmap_clean[heatmap_clean < 0.01] = 0
+        
+        # Calculate statistics
+        non_zero = heatmap_clean[heatmap_clean > 0]
+        if len(non_zero) > 0:
+            mean_val = np.mean(non_zero)
+            std_val = np.std(non_zero)
+            # Adaptive threshold: mean + 1.5*std for drone images (higher threshold for background)
+            adaptive_min_score = max(min_score, mean_val + std_val * 1.5)
+            min_score = min(adaptive_min_score, 0.3)  # Cap at reasonable value
+    
+    # Vectorized 3x3 local-maximum detection using sliding-window max (numpy)
+    pads = np.pad(heatmap, ((1, 1), (1, 1)), mode='constant', constant_values=-np.inf)
+    neighborhood_max = np.full_like(heatmap, -np.inf, dtype=float)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            neighborhood = pads[1 + dy: 1 + dy + H, 1 + dx: 1 + dx + W]
+            neighborhood_max = np.maximum(neighborhood_max, neighborhood)
+
+    local_max_mask = (heatmap == neighborhood_max) & (heatmap > min_score)
+    ys, xs = np.where(local_max_mask)
+    if ys.size == 0:
+        return []
+    scores = heatmap[ys, xs].astype(float)
+    
+    # NEW: Filter by spatial distribution for drone images
+    # Background false positives often have irregular spatial patterns
+    if len(scores) > 10:
+        # Calculate density of detections
+        from scipy.spatial import KDTree
+        points = np.column_stack([xs, ys])
+        tree = KDTree(points)
+        # Count neighbors within radius
+        radius = min(H, W) * 0.1  # 10% of image dimension
+        densities = tree.query_ball_point(points, r=radius, return_length=True)
+        
+        # Weight scores by density (clustered detections get higher weight)
+        density_weights = np.minimum(densities / 5.0, 2.0)  # Normalize and cap
+        weighted_scores = scores * density_weights
+        
+        # Sort by weighted scores
+        order = np.argsort(weighted_scores)[::-1]
+    else:
+        order = np.argsort(scores)[::-1]
+    
+    out = []
+    for i in order[:max_detections]:
+        out.append((float(xs[i]), float(ys[i]), float(scores[i])))
+    return out
 
 
 def compute_ap(preds_per_image: List[List[Tuple[float, float, float]]],
                gts_per_image: List[np.ndarray],
                dist_thresh: float = 4.0,
-               thresholds: np.ndarray = None) -> Tuple[float, np.ndarray, np.ndarray]:
+               return_curve: bool = False) -> Tuple[float, np.ndarray, np.ndarray]:
     """Compute AP from center predictions and GT point arrays.
 
     preds_per_image: list of list of (x_px, y_px, score)
@@ -46,78 +134,77 @@ def compute_ap(preds_per_image: List[List[Tuple[float, float, float]]],
 
     Returns: (AP, precisions, recalls) where precisions/recalls arrays correspond to thresholds used.
     """
-    if thresholds is None:
-        thresholds = np.linspace(0.0, 1.0, 101)
-
-    precisions = []
-    recalls = []
-    total_gts = sum([g.shape[0] for g in gts_per_image])
-
-    for thr in thresholds:
-        tp = 0
-        fp = 0
-        for preds, gts in zip(preds_per_image, gts_per_image):
-            # normalize gt shape to (N,2)
-            gts = np.asarray(gts).astype(float)
-            if gts.size == 0:
-                gts = np.zeros((0, 2))
+    # normalize GTs to numpy arrays of shape (Ni,2)
+    gts_list = []
+    total_gts = 0
+    for g in gts_per_image:
+        g_np = np.asarray(g).astype(float)
+        if g_np.size == 0:
+            g_np = np.zeros((0, 2))
+        elif g_np.ndim == 1:
+            if g_np.size == 2:
+                g_np = g_np.reshape(1, 2)
+            elif g_np.size % 2 == 0:
+                g_np = g_np.reshape(-1, 2)
             else:
-                if gts.ndim == 1:
-                    if gts.size == 2:
-                        gts = gts.reshape(1, 2)
-                    elif gts.size % 2 == 0:
-                        gts = gts.reshape(-1, 2)
-                    else:
-                        gts = np.zeros((0, 2))
-                elif gts.ndim == 2:
-                    if gts.shape[1] != 2:
-                        if gts.size % 2 == 0:
-                            gts = gts.reshape(-1, 2)
-                        else:
-                            gts = np.zeros((0, 2))
-                else:
-                    # flatten to pairs if possible
-                    if gts.size % 2 == 0:
-                        gts = gts.reshape(-1, 2)
-                    else:
-                        gts = np.zeros((0, 2))
-            # filter preds by thr
-            sel = [p for p in preds if p[2] >= thr]
-            matched = np.zeros(len(gts), dtype=bool) if len(gts) > 0 else np.zeros(0, dtype=bool)
-            for (px, py, score) in sel:
-                if len(gts) == 0:
-                    fp += 1
-                    continue
-                # compute distances to unmatched gts
-                dists = np.sqrt((gts[:, 0] - px) ** 2 + (gts[:, 1] - py) ** 2)
-                unmatched_idx = np.where(~matched)[0]
-                if unmatched_idx.size == 0:
-                    fp += 1
-                    continue
-                dists_un = dists[unmatched_idx]
-                minpos = int(np.argmin(dists_un))
-                idx = int(unmatched_idx[minpos])
-                if dists_un[minpos] <= dist_thresh:
-                    tp += 1
-                    matched[idx] = True
-                else:
-                    fp += 1
-        fn = total_gts - tp
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        rec = tp / total_gts if total_gts > 0 else 0.0
-        precisions.append(prec)
-        recalls.append(rec)
+                g_np = np.zeros((0, 2))
+        elif g_np.ndim == 2 and g_np.shape[1] != 2:
+            if g_np.size % 2 == 0:
+                g_np = g_np.reshape(-1, 2)
+            else:
+                g_np = np.zeros((0, 2))
+        else:
+            pass
+        gts_list.append(g_np)
+        total_gts += g_np.shape[0]
 
-    precisions = np.array(precisions)
-    recalls = np.array(recalls)
+    # collect all predictions as (img_idx, x, y, score)
+    all_preds = []
+    for img_idx, preds in enumerate(preds_per_image):
+        for (x, y, s) in preds:
+            all_preds.append((img_idx, float(x), float(y), float(s)))
 
-    # compute AP as area under PR curve (sort by recall)
-    # ensure monotonic recall for integration
-    # use simple trapezoidal integration: sort by recall increasing
-    order = np.argsort(recalls)
-    r = recalls[order]
-    p = precisions[order]
+    if len(all_preds) == 0:
+        # no predictions; return zero arrays for consistency
+        return 0.0, np.zeros((0,)), np.zeros((0,))
+
+    # sort predictions by score desc
+    all_preds.sort(key=lambda x: x[3], reverse=True)
+
+    tp_list = []
+    fp_list = []
+    matched = [np.zeros(g.shape[0], dtype=bool) for g in gts_list]
+
+    for img_idx, px, py, score in all_preds:
+        gts = gts_list[img_idx]
+        if gts.shape[0] == 0:
+            fp_list.append(1)
+            tp_list.append(0)
+            continue
+        dists = np.sqrt((gts[:, 0] - px) ** 2 + (gts[:, 1] - py) ** 2)
+        unmatched_idx = np.where(~matched[img_idx])[0]
+        if unmatched_idx.size == 0:
+            fp_list.append(1)
+            tp_list.append(0)
+            continue
+        dists_un = dists[unmatched_idx]
+        minpos = int(np.argmin(dists_un))
+        idx = int(unmatched_idx[minpos])
+        if dists_un[minpos] <= dist_thresh:
+            tp_list.append(1)
+            fp_list.append(0)
+            matched[img_idx][idx] = True
+        else:
+            tp_list.append(0)
+            fp_list.append(1)
+
+    tp_cum = np.cumsum(tp_list).astype(float)
+    fp_cum = np.cumsum(fp_list).astype(float)
+    precisions = tp_cum / (tp_cum + fp_cum + 1e-12)
+    recalls = tp_cum / total_gts if total_gts > 0 else np.zeros_like(tp_cum)
+
     ap = 0.0
-    if len(r) > 1:
-        ap = np.trapz(p, r)
-    return ap, precisions, recalls
+    if precisions.size > 0 and recalls.size > 0 and total_gts > 0:
+        ap = np.trapz(precisions, recalls)
+
+    return float(ap), precisions, recalls

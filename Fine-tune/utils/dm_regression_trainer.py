@@ -100,8 +100,25 @@ class RegTrainer(Trainer):
         """Setup datasets for detection task"""
         args = self.args
         
+        # Prepare augmentation parameters
+        aug_scale = (args.aug_scale_min, args.aug_scale_max) if args.aug_scale_min != 1.0 or args.aug_scale_max != 1.0 else None
+        aug_flip = args.aug_flip
+        aug_crop_size = args.aug_crop_size
+        
+        # Prepare thermal preprocessing parameters
+        thermal_clahe = getattr(args, 'thermal_clahe', True)
+        thermal_clahe_clip = getattr(args, 'thermal_clahe_clip', 2.0)
+        
         # Training dataset
-        self.datasets = DetectionDataset(args.data_dir, split='train', output_stride=args.downsample_ratio)
+        ds_sigma = float(getattr(args, 'det_sigma', 0) or 0)
+        if ds_sigma and ds_sigma > 0:
+            self.datasets = DetectionDataset(args.data_dir, split='train', output_stride=args.downsample_ratio, sigma=ds_sigma,
+                                           aug_scale=aug_scale, aug_flip=aug_flip, aug_crop_size=aug_crop_size,
+                                           thermal_clahe=thermal_clahe, thermal_clahe_clip=thermal_clahe_clip)
+        else:
+            self.datasets = DetectionDataset(args.data_dir, split='train', output_stride=args.downsample_ratio,
+                                           aug_scale=aug_scale, aug_flip=aug_flip, aug_crop_size=aug_crop_size,
+                                           thermal_clahe=thermal_clahe, thermal_clahe_clip=thermal_clahe_clip)
         if self.world_size > 1:
             from torch.utils.data.distributed import DistributedSampler
             train_sampler = DistributedSampler(self.datasets)
@@ -111,9 +128,14 @@ class RegTrainer(Trainer):
             self.dataloader = DataLoader(self.datasets, batch_size=args.batch_size, shuffle=True,
                                          num_workers=args.num_workers, pin_memory=True, collate_fn=detection_collate)
 
-        # Validation dataset (optional)
+        # Validation dataset (optional, no augmentation)
         try:
-            self.val_dataset = DetectionDataset(args.data_dir, split='val', output_stride=args.downsample_ratio)
+            if ds_sigma and ds_sigma > 0:
+                self.val_dataset = DetectionDataset(args.data_dir, split='val', output_stride=args.downsample_ratio, sigma=ds_sigma,
+                                                   thermal_clahe=thermal_clahe, thermal_clahe_clip=thermal_clahe_clip)
+            else:
+                self.val_dataset = DetectionDataset(args.data_dir, split='val', output_stride=args.downsample_ratio,
+                                                   thermal_clahe=thermal_clahe, thermal_clahe_clip=thermal_clahe_clip)
             if self.world_size > 1:
                 val_sampler = DistributedSampler(self.val_dataset, shuffle=False)
                 self.val_dataloader = DataLoader(self.val_dataset, batch_size=1, sampler=val_sampler, num_workers=8,
@@ -126,9 +148,14 @@ class RegTrainer(Trainer):
             self.val_dataset = []
             self.val_dataloader = []
 
-        # Test dataset (required)
+        # Test dataset (required, no augmentation)
         try:
-            self.test_dataset = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio)
+            if ds_sigma and ds_sigma > 0:
+                self.test_dataset = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio, sigma=ds_sigma,
+                                                    thermal_clahe=thermal_clahe, thermal_clahe_clip=thermal_clahe_clip)
+            else:
+                self.test_dataset = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio,
+                                                    thermal_clahe=thermal_clahe, thermal_clahe_clip=thermal_clahe_clip)
             if self.world_size > 1:
                 test_sampler = DistributedSampler(self.test_dataset, shuffle=False)
                 self.test_dataloader = DataLoader(self.test_dataset, batch_size=1, sampler=test_sampler, num_workers=8,
@@ -159,10 +186,46 @@ class RegTrainer(Trainer):
         args = self.args
         
         if args.task == 'detection':
-            from models.detection.center_head import CenterHead
+            from models.detection.det_model import DetectionHeadWrapper
             self.model = Swin_BM_RGBT(pre_train=False)
+            # Optionally add a lightweight adaptor to map fused features to head input
+            if getattr(args, 'use_det_adaptor', False):
+                try:
+                    # Allow using GroupNorm in adaptor when requested
+                    in_ch = 768
+                    if getattr(args, 'det_use_gn', False):
+                        # pick a dividing group count
+                        for g in (32, 16, 8, 4, 2, 1):
+                            if in_ch % g == 0:
+                                gn_groups = g
+                                break
+                        bn_layer = nn.GroupNorm(gn_groups, in_ch)
+                    else:
+                        bn_layer = nn.BatchNorm2d(in_ch)
+
+                    self.model.det_adaptor = nn.Sequential(
+                        nn.Conv2d(in_ch, in_ch, kernel_size=1),
+                        bn_layer,
+                        nn.ReLU(inplace=True)
+                    )
+                    logging.info('Initialized det_adaptor (1x1 conv + %s + ReLU) for detection head.',
+                                 'GroupNorm' if getattr(args, 'det_use_gn', False) else 'BatchNorm')
+                except Exception as e:
+                    logging.warning('Failed to initialize det_adaptor: %s', repr(e))
+                except Exception as e:
+                    logging.warning('Failed to initialize det_adaptor: %s', repr(e))
             # Defer detection head attachment until after checkpoint loading
-            self._deferred_det_head = CenterHead(in_channels=768)
+            head_conv = getattr(args, 'head_conv', 256)
+            use_deconv = getattr(args, 'use_deconv', False)
+            keypoint_only = getattr(args, 'keypoint_mode', False)
+            self._deferred_det_head = DetectionHeadWrapper(
+                in_channels=768, hidden=256, 
+                head_conv=head_conv, use_deconv=use_deconv, keypoint_only=keypoint_only,
+                use_fpn=getattr(args, 'use_fpn', False)
+            )
+            # Pass use_logits and use_gn to the underlying CenterHead
+            self._deferred_det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
+            self._deferred_det_head.head.use_gn = getattr(args, 'det_use_gn', False)
         else:
             self.model = Swin_BM_RGBT()
         
@@ -320,13 +383,42 @@ class RegTrainer(Trainer):
         args = self.args
         target_model = self.model.module if (self.is_distributed and isinstance(self.model, torch.nn.parallel.DistributedDataParallel)) else self.model
         
-        params = [p for p in target_model.parameters() if p.requires_grad]
-        if len(params) == 0:
-            logging.warning('No trainable parameters remain after applying freeze flags. Check flags.')
+        # If a head-specific LR is provided, create optimizer param groups so
+        # detection head/adaptor params can use a higher lr while keeping other
+        # params at the base lr.
+        head_lr = getattr(args, 'head_lr', None)
+        if head_lr is not None:
+            head_params = []
+            other_params = []
+            for name, p in target_model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                if 'det_head' in name or 'det_adaptor' in name:
+                    head_params.append(p)
+                else:
+                    other_params.append(p)
+
+            total_trainable = len(head_params) + len(other_params)
+            if total_trainable == 0:
+                logging.warning('No trainable parameters remain after applying freeze flags. Check flags.')
+                self.optimizer = optim.Adam([], lr=args.lr, weight_decay=args.weight_decay)
+                return
+
+            logging.info(f'Training {total_trainable} parameter tensors (head: {len(head_params)}, other: {len(other_params)})')
+            param_groups = []
+            if len(head_params) > 0:
+                param_groups.append({'params': head_params, 'lr': head_lr})
+            if len(other_params) > 0:
+                param_groups.append({'params': other_params, 'lr': args.lr})
+
+            self.optimizer = optim.Adam(param_groups, weight_decay=args.weight_decay)
         else:
-            logging.info(f'Training {len(params)} parameter tensors (total elements: {sum(p.numel() for p in params)})')
-        
-        self.optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
+            params = [p for p in target_model.parameters() if p.requires_grad]
+            if len(params) == 0:
+                logging.warning('No trainable parameters remain after applying freeze flags. Check flags.')
+            else:
+                logging.info(f'Training {len(params)} parameter tensors (total elements: {sum(p.numel() for p in params)})')
+            self.optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
         
         # Log trainable parameters
         self._log_trainable_parameters(target_model)
@@ -358,8 +450,23 @@ class RegTrainer(Trainer):
         self.rd_loss = CL1()
 
         # Detection losses
-        self.heatmap_loss = nn.BCELoss(reduction='sum')
+        # Heatmap: BCE or focal (both reduction='none' element-wise). Focal requires logits.
+        self.use_focal = bool(getattr(args, 'use_focal_heatmap', False))
+        self.focal_alpha = float(getattr(args, 'focal_alpha', 0.25))
+        self.focal_gamma = float(getattr(args, 'focal_gamma', 2.0))
+        if self.use_focal:
+            # focal implemented manually on logits; use BCEWithLogits for CE term
+            self.heatmap_bce_logits = nn.BCEWithLogitsLoss(reduction='none').to(self.device)
+        else:
+            if getattr(args, 'use_bce_logits', False):
+                self.heatmap_loss = nn.BCEWithLogitsLoss(reduction='none').to(self.device)
+            else:
+                self.heatmap_loss = nn.BCELoss(reduction='none').to(self.device)
         self.l1 = nn.L1Loss(reduction='sum')
+        
+        # Background suppression loss
+        self.use_bg_suppress = getattr(args, 'use_bg_suppress', True)
+        self.bg_suppress_weight = getattr(args, 'bg_suppress_weight', 0.01)  # Reduced for stability
 
     def _initialize_metrics(self):
         """Initialize metric tracking variables"""
@@ -404,18 +511,21 @@ class RegTrainer(Trainer):
         
         # Step 5: Attach detection head (before DDP)
         self._attach_detection_head()
-        
-        # Step 6: Wrap with DDP if distributed
+
+        # Step 6: Freeze model components BEFORE DDP wrapping so that
+        # DistributedDataParallel sees the correct `requires_grad` flags.
+        # This avoids subtle issues where parameters are frozen after DDP
+        # wrapping and become unused or excluded from the optimizer.
+        self._freeze_model_components()
+
+        # Step 7: Wrap with DDP if distributed
         if self.is_distributed:
-            find_unused = bool(getattr(args, 'freeze_backbone', False) or 
-                             getattr(args, 'freeze_counter', False) or 
-                             getattr(args, 'freeze_unet', False))
+            # Set find_unused_parameters=False since we now properly freeze components before DDP
+            # and all active parameters are used in forward pass (detection head is always attached)
+            find_unused = False
             self.model = torch.nn.parallel.DistributedDataParallel(
                 self.model, device_ids=[self.local_rank], output_device=self.local_rank,
                 find_unused_parameters=find_unused)
-        
-        # Step 7: Freeze model components
-        self._freeze_model_components()
         
         # Step 8: Create optimizer
         self._create_optimizer()
@@ -474,6 +584,10 @@ class RegTrainer(Trainer):
                     # No validation set - use test set for both evaluation and best model selection
                     logging.info('No validation data found; running test epoch for evaluation and model selection.')
                     self.test_epoch(save_best=True)
+                    # If test-based early stopping flagged, break the main training loop
+                    if getattr(self, 'should_stop', False):
+                        logging.info('Early stopping triggered by test-set AP at epoch %d', epoch)
+                        break
         # Clean up distributed resources if used
         if self.is_distributed:
             try:
@@ -566,28 +680,97 @@ class RegTrainer(Trainer):
         }
 
     def _compute_detection_losses(self, heat_pred, size_pred, offset_pred, detection_targets):
-        """Compute all detection-related losses
-        
-        Returns:
-            Total detection loss (weighted)
-        """
+        """Compute all detection-related losses - FIXED for numerical stability"""
         heat_target = detection_targets['heat_target']
         size_target = detection_targets['size_target']
         offset_target = detection_targets['offset_target']
         
-        # Heatmap BCE loss
-        hm_loss = self.heatmap_loss(heat_pred, heat_target)
+        keypoint_mode = getattr(self.args, 'keypoint_mode', False)
         
-        # Size/offset only at positive locations
+        # Heatmap loss: BCE or focal-on-logits
+        # Apply gradient clipping to predictions for stability
+        heat_pred_clipped = torch.clamp(heat_pred, -10, 10)  # Prevent extreme values
+        
         pos_mask = (heat_target > 0).float()
+        if self.use_focal:
+            # FIXED: Use clipped predictions for focal loss
+            ce = self.heatmap_bce_logits(heat_pred_clipped, heat_target)
+            # Sigmoid with clamping for numerical stability
+            p = torch.sigmoid(heat_pred_clipped)
+            p_t = p * pos_mask + (1.0 - p) * (1.0 - pos_mask)
+            focal_factor = (self.focal_alpha * torch.pow(1.0 - p_t, self.focal_gamma)).detach()
+            loss_map = focal_factor * ce
+        else:
+            loss_map = self.heatmap_loss(heat_pred_clipped, heat_target)
+
+        pos_loss = (loss_map * pos_mask).sum()
+        
+        # Negative mining with gradient clipping for stability
+        if getattr(self.args, 'det_neg_topk_ratio', None):
+            ratio = float(self.args.det_neg_topk_ratio)
+            neg_map = (loss_map * (1.0 - pos_mask)).view(loss_map.size(0), -1)
+            k = max(1, int(ratio * neg_map.size(1)))
+            topk_vals, _ = torch.topk(neg_map, k, dim=1)
+            neg_loss = topk_vals.sum()
+        else:
+            neg_loss = (loss_map * (1.0 - pos_mask)).sum()
+        
+        # FIXED: Background suppression with proper scaling
+        if self.use_bg_suppress:
+            # Only apply to high-confidence background predictions
+            bg_mask = (heat_target < 0.01).float()
+            # Use sigmoid for probability scale (0-1)
+            bg_prob = torch.sigmoid(heat_pred_clipped)
+            # Gentle penalty for high background predictions
+            bg_penalty = (bg_prob * bg_mask).sum() * self.bg_suppress_weight * 0.01  # Reduced scale
+            neg_loss = neg_loss + bg_penalty
+        
+        # Normalize by number of positive pixels + small constant for stability
+        num_pixels = float(loss_map.numel())
+        num_pos_pixels = pos_mask.sum().clamp(min=1.0)
+        pos_w = float(getattr(self.args, 'det_pos_weight', 1.0))
+        
+        # FIXED: Proper normalization to prevent exploding loss
+        hm_loss = (pos_loss * pos_w) / (num_pos_pixels + 1e-6) + neg_loss / (num_pixels + 1e-6)
+
+        # Size/offset only at positive locations
         num_pos = pos_mask.sum().clamp(min=1.0)
         mask2 = pos_mask.repeat(1, 2, 1, 1)
         
-        size_l = self.l1(size_pred * mask2, size_target * mask2) / num_pos
-        off_l = self.l1(offset_pred * mask2, offset_target * mask2) / num_pos
+        # PHASE 1: Skip size loss in keypoint mode
+        if keypoint_mode or size_pred is None:
+            size_l = torch.tensor(0.0, device=self.device)
+            iou_l = torch.tensor(0.0, device=self.device)
+        else:
+            size_l = self.l1(size_pred * mask2, size_target * mask2) / num_pos
+            if bool(getattr(self.args, 'use_iou_size', False)):
+                wp = (size_pred[:, 0:1] * pos_mask).view(size_pred.size(0), -1)
+                hp = (size_pred[:, 1:2] * pos_mask).view(size_pred.size(0), -1)
+                wg = (size_target[:, 0:1] * pos_mask).view(size_target.size(0), -1)
+                hg = (size_target[:, 1:2] * pos_mask).view(size_target.size(0), -1)
+                inter = torch.minimum(wp, wg) * torch.minimum(hp, hg)
+                union = (wp * hp + wg * hg - inter).clamp(min=1e-6)
+                iou = (inter / union)
+                iou_l = (1.0 - iou).sum() / num_pos
+                size_l = size_l + float(getattr(self.args, 'iou_weight', 0.5)) * iou_l
         
-        det_loss = (hm_loss + size_l + off_l) * self.args.det_weight
-        return det_loss
+        off_l = self.l1(offset_pred * mask2, offset_target * mask2) / num_pos
+
+        # FIXED: Scale detection loss properly
+        det_loss = (hm_loss * 0.1 + size_l * 0.1 + off_l * 0.1) * self.args.det_weight
+
+        # Return detailed components for logging/diagnostics
+        return {
+            'det_loss': det_loss,
+            'hm_loss': hm_loss,
+            'pos_loss': pos_loss,
+            'neg_loss': neg_loss,
+            'size_l': size_l,
+            'off_l': off_l,
+            'iou_l': iou_l,
+            'num_pixels': num_pixels,
+            'num_pos': num_pos
+        }
 
     def train_eopch(self):
         """Training loop for one epoch"""
@@ -598,10 +781,16 @@ class RegTrainer(Trainer):
         epoch_count_loss = AverageMeter()
         epoch_tv_loss = AverageMeter()
         epoch_det_loss = AverageMeter()
+        epoch_hm_pos = AverageMeter()
+        epoch_hm_neg = AverageMeter()
+        epoch_size_loss = AverageMeter()
+        epoch_off_loss = AverageMeter()
+        epoch_grad_norm = AverageMeter()
         epoch_total_loss = AverageMeter()
         epoch_game = AverageMeter()
         epoch_mse = AverageMeter()
         epoch_rd_loss = AverageMeter()
+        epoch_bg_suppress = AverageMeter()
         epoch_start = time.time()
         self.model.train()
 
@@ -637,8 +826,27 @@ class RegTrainer(Trainer):
                 # Compute task-specific losses
                 if self.args.task == 'detection':
                     # Detection task - only detection losses
-                    total_loss = self._compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
+                    det_losses = self._compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
+                    total_loss = det_losses['det_loss']
+                    
+                    # FIXED: Check for NaN/Inf in loss
+                    if torch.isnan(total_loss) or torch.isinf(total_loss):
+                        logging.warning(f"NaN/Inf detected in loss at step {step}, skipping batch")
+                        continue
+                    
+                    # Log detailed components
                     epoch_det_loss.update(total_loss.item(), N)
+                    epoch_hm_pos.update(float(det_losses['pos_loss']) / max(1.0, float(det_losses['num_pixels'])), N)
+                    epoch_hm_neg.update(float(det_losses['neg_loss']) / max(1.0, float(det_losses['num_pixels'])), N)
+                    epoch_size_loss.update(float(det_losses['size_l']), N)
+                    epoch_off_loss.update(float(det_losses['off_l']), N)
+                    
+                    # Track background suppression
+                    if self.use_bg_suppress:
+                        bg_mask = (detection_targets['heat_target'] < 0.01).float()
+                        bg_prob = torch.sigmoid(torch.clamp(heat_pred, -10, 10))
+                        bg_penalty = (bg_prob * bg_mask).mean().item()
+                        epoch_bg_suppress.update(bg_penalty, N)
                 else:
                     # Counting task - only counting losses
                     img_h = int(outputs.size(2) * self.downsample_ratio)
@@ -663,10 +871,35 @@ class RegTrainer(Trainer):
                     
                     total_loss = ot_loss + count_loss + tv_loss + rd_loss * self.args.wrd
 
-                # Backward pass
+                # Backward pass with gradient clipping
                 self.optimizer.zero_grad()
                 total_loss.backward()
+                
+                # FIXED: Stronger gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                
                 self.optimizer.step()
+
+                # Compute gradient norms for detection head/adaptor (diagnostics)
+                if self.rank == 0:
+                    # determine the (possibly DDP-wrapped) target model
+                    target_model = self.model.module if (self.is_distributed and isinstance(self.model, torch.nn.parallel.DistributedDataParallel)) else self.model
+
+                    def grad_norm_for_params(named_parameters, substrings):
+                        total_sq = 0.0
+                        count = 0
+                        for n, p in named_parameters:
+                            if not p.requires_grad or p.grad is None:
+                                continue
+                            if any(s in n for s in substrings):
+                                total_sq += float((p.grad.data ** 2).sum().cpu().item())
+                                count += 1
+                        return (total_sq ** 0.5, count)
+
+                    gn, gc = grad_norm_for_params(target_model.named_parameters(), ['det_head', 'det_adaptor'])
+                    if gc > 0:
+                        # store grad norm for epoch-level reporting instead of printing every batch
+                        epoch_grad_norm.update(gn, 1)
 
                 # Update metrics
                 pred_count = torch.sum(outputs.view(N, -1), dim=1).detach().cpu().numpy()
@@ -685,6 +918,14 @@ class RegTrainer(Trainer):
                  .format(self.epoch, epoch_count_loss.get_avg(), epoch_det_loss.get_avg(), 
                         epoch_total_loss.get_avg(), epoch_rd_loss.get_avg(), epoch_game.get_avg(), 
                         np.sqrt(epoch_mse.get_avg()), time.time() - epoch_start))
+            # additional diagnostics for detection
+            logging.info('Epoch {} Train Detection diagnostics: HM_pos {:.6f}, HM_neg {:.6f}, Size {:.6f}, Off {:.6f}'.format(
+                self.epoch, epoch_hm_pos.get_avg(), epoch_hm_neg.get_avg(), epoch_size_loss.get_avg(), epoch_off_loss.get_avg()))
+            # Gradient norm diagnostic (averaged over epoch) to avoid per-batch printing
+            try:
+                logging.info('Epoch {} Avg Grad Norm (det_head/adaptor): {:.6f}'.format(self.epoch, epoch_grad_norm.get_avg()))
+            except Exception:
+                pass
         
         # Save checkpoint
         model_state_dic = self.model.state_dict()
@@ -718,7 +959,19 @@ class RegTrainer(Trainer):
         
         for idx in range(B):
             hm = heat_pred[idx, 0]
-            peaks = heatmap_peaks(hm, min_score=0.01)
+            # heat_pred may be raw logits if model was configured with `use_bce_logits`.
+            # Convert to probabilities for peak extraction if values are outside [0,1].
+            if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
+                # Numerically stable sigmoid with overflow protection
+                with np.errstate(over='ignore', invalid='ignore'):
+                    hm_pos = np.where(hm >= 0, 1.0 / (1.0 + np.exp(-np.clip(hm, -500, 500))), 0)
+                    hm_neg = np.where(hm < 0, np.exp(np.clip(hm, -500, 0)) / (1.0 + np.exp(np.clip(hm, -500, 0))), 0)
+                    hm = hm_pos + hm_neg
+            
+            # Apply NMS during peak extraction (CenterNet-style)
+            use_nms = True  # Enable by default for CenterNet-style heads
+            nms_kernel = getattr(self.args, 'nms_kernel', 3)
+            peaks = heatmap_peaks(hm, min_score=0.01, use_nms=use_nms, nms_kernel=nms_kernel)
             
             preds_px = []
             for x_out, y_out, score in peaks:
@@ -727,9 +980,61 @@ class RegTrainer(Trainer):
                 cx = (x_out + offx) * self.downsample_ratio
                 cy = (y_out + offy) * self.downsample_ratio
                 preds_px.append((cx, cy, float(score)))
+            # optional eval-time NMS/top-K filtering
+            nms_type = getattr(self.args, 'eval_nms', None)
+            if nms_type:
+                if nms_type == 'radius':
+                    rad = float(getattr(self.args, 'eval_nms_radius', 4.0))
+                    preds_px = self._radius_nms(preds_px, rad)
+                elif nms_type == 'soft':
+                    sigma = float(getattr(self.args, 'eval_soft_nms_sigma', 0.5))
+                    preds_px = self._soft_nms_points(preds_px, sigma)
+            # cap top-200 to avoid huge lists
+            preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:200]
             all_preds.append(preds_px)
         
         return all_preds
+
+    @staticmethod
+    def _radius_nms(preds, radius):
+        if not preds:
+            return []
+        pts = sorted(preds, key=lambda x: x[2], reverse=True)
+        keep = []
+        taken = [False] * len(pts)
+        r2 = radius * radius
+        for i, (x, y, s) in enumerate(pts):
+            if taken[i]:
+                continue
+            keep.append((x, y, s))
+            for j in range(i + 1, len(pts)):
+                if taken[j]:
+                    continue
+                x2, y2, _ = pts[j]
+                dx = x - x2
+                dy = y - y2
+                if dx * dx + dy * dy <= r2:
+                    taken[j] = True
+        return keep
+
+    @staticmethod
+    def _soft_nms_points(preds, sigma):
+        if not preds:
+            return []
+        pts = sorted(preds, key=lambda x: x[2], reverse=True)
+        result = []
+        while pts:
+            x, y, s = pts.pop(0)
+            result.append((x, y, s))
+            new_pts = []
+            for x2, y2, s2 in pts:
+                dist2 = (x - x2) ** 2 + (y - y2) ** 2
+                # gaussian penalty on score
+                s2_new = s2 * np.exp(-dist2 / (2.0 * (sigma ** 2)))
+                if s2_new > 0.0:
+                    new_pts.append((x2, y2, s2_new))
+            pts = sorted(new_pts, key=lambda x: x[2], reverse=True)
+        return result
 
     def _compute_game_metrics(self, outputs, target):
         """Compute GAME metrics at all levels
@@ -747,28 +1052,35 @@ class RegTrainer(Trainer):
         
         return game, mse
 
-    def val_epoch(self):
-        """Validation epoch - evaluate on validation set"""
-        self.model.eval()
+    def _run_eval_split(self, dataloader, split_name, save_best=False):
+        """Shared evaluation routine for val/test to keep logic identical."""
         epoch_start = time.time()
-        total_relative_error = 0
-        epoch_res = []
+        args = self.args
+        self.model.eval()
 
-        dataloader = tqdm(self.val_dataloader, desc="Validating", leave=False, dynamic_ncols=True) if self.rank == 0 else self.val_dataloader
-        
-        if self.args.task == 'detection':
+        # Metric accumulators
+        game = [0, 0, 0, 0]
+        mse = [0, 0, 0, 0]
+        ap = None
+
+        # Progress bar label matches prior behaviour
+        desc = "Testing" if split_name.lower() == "test" else "Validating"
+        loader = tqdm(dataloader, desc=desc, leave=False, dynamic_ncols=True) if self.rank == 0 else dataloader
+
+        if args.task == 'detection':
             preds_per_image = []
             gts_per_image = []
-            val_game = [0, 0, 0, 0]
-            val_mse = [0, 0, 0, 0]
-            
-            for sample in dataloader:
+            for sample in loader:
                 rgb = sample['rgb'].to(self.device)
                 t = sample['t'].to(self.device)
-                target = sample['heatmap'].to(self.device)
-                # points is a list of tensors (one per image in batch)
+                target_heatmap = sample['heatmap'].to(self.device)
                 points_list = sample.get('points', [])
-                
+
+                if len(rgb.shape) == 3:
+                    rgb = rgb.unsqueeze(0)
+                if len(t.shape) == 3:
+                    t = t.unsqueeze(0)
+
                 with torch.set_grad_enabled(False):
                     outputs, dets = self.model(rgb, t)
                     heat_pred = dets[0].detach().cpu().numpy()
@@ -778,48 +1090,34 @@ class RegTrainer(Trainer):
                     # Extract detections - returns list of detection lists
                     batch_preds = self._evaluate_detection_sample(heat_pred, offset_pred, sample)
                     preds_per_image.extend(batch_preds)
-                    
+
                     # Convert points tensors to numpy arrays
                     for pts in points_list:
                         gts_per_image.append(pts.cpu().numpy() if isinstance(pts, torch.Tensor) else pts)
-                    
+
                     # Counting GAME metrics
-                    game, mse = self._compute_game_metrics(outputs, target)
+                    game_scores, mse_scores = self._compute_game_metrics(outputs, target_heatmap[0])
                     for L in range(4):
-                        val_game[L] += game[L]
-                        val_mse[L] += mse[L]
-                    
-                    # Standard counting metrics
-                    res, relative_error = self._evaluate_counting_sample(outputs, target)
-                    epoch_res.append(res)
-                    total_relative_error += relative_error
-            
-            # Log counting GAME metrics
-            N_val = len(self.val_dataloader)
-            if N_val > 0:
-                val_game = [m / N_val for m in val_game]
-                val_mse = [torch.sqrt(torch.tensor(m / N_val)) for m in val_mse]
-                logging.info('Epoch {} Val Counting: GAME0 {:.2f} GAME1 {:.2f} GAME2 {:.2f} GAME3 {:.2f} MSE {:.2f}'.format(
-                    self.epoch, val_game[0], val_game[1], val_game[2], val_game[3], val_mse[0]))
-            
-            # Compute and log detection AP
-            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=4.0)
-            logging.info('Epoch {} Val Detection AP: {:.4f}'.format(self.epoch, ap))
-            
-            # Early stopping check - only if we have actual validation data
-            if N_val > 0:
-                if ap > self.best_ap:
-                    self.best_ap = ap
-                    self.no_improve_ap = 0
-                else:
-                    self.no_improve_ap += 1
-                if self.no_improve_ap >= self.det_patience:
-                    logging.info('Detection AP did not improve for %d epochs (patience=%d). Stopping early.', 
-                               self.no_improve_ap, self.det_patience)
-                    self.should_stop = True
+                        game[L] += game_scores[L]
+                        mse[L] += mse_scores[L]
+
+            # Compute and log counting GAME metrics
+            N = len(dataloader)
+            split_game = [m / N for m in game]
+            split_mse = [torch.sqrt(m / N) for m in mse]
+            logging.info('Epoch {} {} Counting: GAME0 {:.2f} GAME1 {:.2f} GAME2 {:.2f} GAME3 {:.2f} MSE {:.2f}'.format(
+                self.epoch, split_name, split_game[0], split_game[1], split_game[2], split_game[3], split_mse[0]))
+
+            # Compute and log detection AP (use configurable dist threshold in pixels)
+            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=float(getattr(self.args, 'ap_dist_thresh', 8.0)))
+            logging.info('Epoch {} {} Detection AP (dist {:.1f}px): {:.4f}'.format(self.epoch, split_name, float(getattr(self.args, 'ap_dist_thresh', 8.0)), ap))
+
+            # For downstream logic, reassign game/mse to averaged versions
+            game = split_game
+            mse = split_mse
         else:
             # Counting-only task
-            for inputs, target, name in dataloader:
+            for inputs, target, name in loader:
                 if type(inputs) == list:
                     inputs[0] = inputs[0].to(self.device)
                     inputs[1] = inputs[1].to(self.device)
@@ -835,42 +1133,64 @@ class RegTrainer(Trainer):
 
                 with torch.set_grad_enabled(False):
                     rgb, t = inputs
-                    outputs, _ = self.model(rgb, t)
-                    res, relative_error = self._evaluate_counting_sample(outputs, target)
-                    epoch_res.append(res)
-                    total_relative_error += relative_error
+                    res = self.model(rgb, t)
+                    outputs = res[0] if isinstance(res, tuple) else res
 
-        if self.rank == 0 and hasattr(dataloader, 'close'):
-            dataloader.close()
+                    game_scores, mse_scores = self._compute_game_metrics(outputs, target)
+                    for L in range(4):
+                        game[L] += game_scores[L]
+                        mse[L] += mse_scores[L]
 
-        # Compute final validation metrics
-        N = len(self.val_dataloader)
-        if len(epoch_res) == 0 or N == 0:
-            logging.warning('Validation set is empty (N=%d, collected_samples=%d). Skipping val metric computation.', N, len(epoch_res))
-            mse = float('inf')
-            mae = float('inf')
-            mae_is_best = False
-            mse_is_best = False
-            total_relative_error = float('nan')
-        else:
-            epoch_res = np.array(epoch_res)
-            mse = np.sqrt(np.mean(np.square(epoch_res)))
-            mae = np.mean(np.abs(epoch_res))
-            mae_is_best = mae < self.val_best_mae
-            mse_is_best = mse < self.val_best_mse
-            total_relative_error = total_relative_error / N
-        
-        logging.info('Epoch {} Val, MSE: {:.2f} MAE: {:.2f}, Re: {:.4f}, Cost {:.1f} sec'
-                     .format(self.epoch, mse, mae, total_relative_error, time.time() - epoch_start))
+            N = len(dataloader)
+            game = [m / N for m in game]
+            mse = [torch.sqrt(m / N) for m in mse]
 
-        if mae_is_best or mse_is_best:
-            self.val_best_mse = mse
-            self.val_best_mae = mae
-            logging.info("*** Best mse {:.2f} mae {:.2f} model epoch {}".format(self.val_best_mse,
-                                                                                 self.val_best_mae,
-                                                                                 self.epoch))
+        if self.rank == 0 and hasattr(loader, 'close'):
+            loader.close()
+
+        # Log split summary
+        log_str = '{} {}, GAME0 {game0:.2f} GAME1 {game1:.2f} GAME2 {game2:.2f} GAME3 {game3:.2f} ' \
+                  'MSE {mse:.2f}, Time cost {time_cost:.1f}s'.format(
+                      split_name, N, game0=game[0], game1=game[1], game2=game[2], game3=game[3],
+                      mse=mse[0], time_cost=time.time() - epoch_start)
+        logging.info(log_str)
+
+        # Determine if this is the best model and save if needed
+        prev_best_ap = float(self.best_ap) if hasattr(self, 'best_ap') else -np.inf
+        should_save, save_msg = self._should_save_best_model(game, ap)
+
+        if should_save or save_best:
+            if should_save:
+                logging.info(save_msg)
+            if self.rank == 0:
+                model_state_dic = self.model.state_dict()
+                torch.save(model_state_dic, os.path.join(self.save_dir, "best_model.pth"))
+        elif save_msg:
+            logging.info(save_msg)
+
+        # Update early-stopping counters based on detection AP (useful when validation is absent)
+        if ap is not None:
+            try:
+                if ap > prev_best_ap:
+                    self.no_improve_ap = 0
+                else:
+                    self.no_improve_ap += 1
+                if self.no_improve_ap >= self.det_patience:
+                    logging.info('Detection AP did not improve for %d epochs (patience=%d). Stopping early.',
+                                 self.no_improve_ap, self.det_patience)
+                    self.should_stop = True
+            except Exception:
+                pass
+
+        # For callers that expect improvement flags, mirror best-model decision
+        mae_is_best = should_save
+        mse_is_best = should_save
 
         return mae_is_best, mse_is_best
+
+    def val_epoch(self):
+        """Validation epoch - evaluate on validation set"""
+        return self._run_eval_split(self.val_dataloader, 'Val')
 
     def _should_save_best_model(self, game, ap=None):
         """Determine if current model is best based on task type
@@ -917,114 +1237,4 @@ class RegTrainer(Trainer):
         Args:
             save_best: If True, save best model based on test performance (used when no validation set)
         """
-        epoch_start = time.time()
-        args = self.args
-        self.model.eval()
-        game = [0, 0, 0, 0]
-        mse = [0, 0, 0, 0]
-
-        dataloader = tqdm(self.test_dataloader, desc="Testing", leave=False, dynamic_ncols=True) if self.rank == 0 else self.test_dataloader
-        
-        if args.task == 'detection':
-            preds_per_image = []
-            gts_per_image = []
-            
-            for sample in dataloader:
-                rgb = sample['rgb'].to(self.device)
-                t = sample['t'].to(self.device)
-                target_heatmap = sample['heatmap'].to(self.device)
-                # points is a list of tensors
-                points_list = sample.get('points', [])
-                
-                if len(rgb.shape) == 3:
-                    rgb = rgb.unsqueeze(0)
-                    t = t.unsqueeze(0)
-
-                with torch.set_grad_enabled(False):
-                    outputs, dets = self.model(rgb, t)
-                    heat_pred = dets[0].detach().cpu().numpy()
-                    offset_pred = dets[2].detach().cpu().numpy() if dets[2] is not None else None
-                    
-                    # Extract detections - returns list of detection lists
-                    batch_preds = self._evaluate_detection_sample(heat_pred, offset_pred, sample)
-                    preds_per_image.extend(batch_preds)
-                    
-                    # Convert points tensors to numpy arrays
-                    for pts in points_list:
-                        gts_per_image.append(pts.cpu().numpy() if isinstance(pts, torch.Tensor) else pts)
-
-                    # Counting GAME metrics
-                    game_scores, mse_scores = self._compute_game_metrics(outputs, target_heatmap[0])
-                    for L in range(4):
-                        game[L] += game_scores[L]
-                        mse[L] += mse_scores[L]
-
-            # Compute and log counting GAME metrics
-            N = len(self.test_dataloader)
-            test_game = [m / N for m in game]
-            test_mse = [torch.sqrt(m / N) for m in mse]
-            logging.info('Epoch {} Test Counting: GAME0 {:.2f} GAME1 {:.2f} GAME2 {:.2f} GAME3 {:.2f} MSE {:.2f}'.format(
-                self.epoch, test_game[0], test_game[1], test_game[2], test_game[3], test_mse[0]))
-            
-            # Compute and log detection AP
-            ap, precisions, recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=4.0)
-            logging.info('Epoch {} Test Detection AP: {:.4f}'.format(self.epoch, ap))
-            
-            game = test_game
-            mse = test_mse
-        else:
-            # Counting-only task
-            for inputs, target, name in dataloader:
-                if type(inputs) == list:
-                    inputs[0] = inputs[0].to(self.device)
-                    inputs[1] = inputs[1].to(self.device)
-                else:
-                    inputs = inputs.to(self.device)
-
-                if len(inputs[0].shape) == 5:
-                    inputs[0] = inputs[0].squeeze(0)
-                    inputs[1] = inputs[1].squeeze(0)
-                if len(inputs[0].shape) == 3:
-                    inputs[0] = inputs[0].unsqueeze(0)
-                    inputs[1] = inputs[1].unsqueeze(0)
-
-                with torch.set_grad_enabled(False):
-                    rgb, t = inputs
-                    res = self.model(rgb, t)
-                    if isinstance(res, tuple):
-                        outputs = res[0]
-                    else:
-                        outputs = res
-                    
-                    game_scores, mse_scores = self._compute_game_metrics(outputs, target)
-                    for L in range(4):
-                        game[L] += game_scores[L]
-                        mse[L] += mse_scores[L]
-
-            N = len(self.test_dataloader)
-            game = [m / N for m in game]
-            mse = [torch.sqrt(m / N) for m in mse]
-
-        if self.rank == 0 and hasattr(dataloader, 'close'):
-            dataloader.close()
-
-        # Log test summary
-        log_str = 'Test {}, GAME0 {game0:.2f} GAME1 {game1:.2f} GAME2 {game2:.2f} GAME3 {game3:.2f} ' \
-                  'MSE {mse:.2f}, Time cost {time_cost:.1f}s'.format(
-                      N, game0=game[0], game1=game[1], game2=game[2], game3=game[3], 
-                      mse=mse[0], time_cost=time.time() - epoch_start)
-        logging.info(log_str)
-
-        # Determine if this is the best model and save if needed
-        # When save_best=True (no validation set), always check and potentially save based on test performance
-        ap = locals().get('ap', None)
-        should_save, save_msg = self._should_save_best_model(game, ap)
-        
-        if should_save or save_best:
-            if should_save:
-                logging.info(save_msg)
-            if self.rank == 0:
-                model_state_dic = self.model.state_dict()
-                torch.save(model_state_dic, os.path.join(self.save_dir, "best_model.pth"))
-        elif save_msg:
-            logging.info(save_msg)
+        self._run_eval_split(self.test_dataloader, 'Test', save_best=save_best)

@@ -5,5 +5,10 @@
 __pycache__
 *.log
 .unit_test
+.github
+.pytest_cache
+.tmp_posttrain
 checkpoints
+checkpoints_rgbt_cc
 ckpt_verify
+teammates
