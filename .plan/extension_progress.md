@@ -160,7 +160,7 @@
 **What changed for Phase 1:**
 - `CenterHead`/`DetectionHeadWrapper`: keypoint-only flag removes size head entirely; forward returns `(heat, None, offset)`.
 - Trainer: size loss skipped; DDP wraps with active params only; early-stop by AP when no val split.
-- CLI/scripts: `--keypoint-mode`, `--fixed-box-size`, train/test wrappers updated; diagnostics accept the new flags.
+- CLI/scripts: `--keypoint-mode`, train/test wrappers updated; diagnostics accept the new flags.
 
 **Next suggestions (non-invasive):**
 - Keep stricter diagnostics defaults (score threshold ≥0.1–0.15, `max_dets` ~150–200, `nms_radius` ~2–4) to curb FPs.

@@ -49,7 +49,6 @@ python3 Fine-tune/test_detection_vis.py \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_RAW:+--score-thresh "$SCORE_THRESH_RAW"} \
   ${SOFT_NMS_SIGMA_RAW:+--soft-nms-sigma "$SOFT_NMS_SIGMA_RAW"} \
   --scores-csv "scores.csv" --scores-hist "scores.png"
@@ -66,7 +65,6 @@ python3 Fine-tune/test_detection_vis.py \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_TILE:+--score-thresh "$SCORE_THRESH_TILE"} \
   ${SOFT_NMS_SIGMA_TILE:+--soft-nms-sigma "$SOFT_NMS_SIGMA_TILE"} \
   --tile-size "$TILE_SIZE" --tile-overlap "$TILE_OVER" \
@@ -84,7 +82,6 @@ python3 Fine-tune/test_detection_vis.py \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_ORIG:+--score-thresh "$SCORE_THRESH_ORIG"} \
   ${SOFT_NMS_SIGMA_ORIG:+--soft-nms-sigma "$SOFT_NMS_SIGMA_ORIG"} \
   --indices-file "$INDICES_FILE" \
