@@ -481,8 +481,6 @@ def parse_args():
                         help='enable FPN neck (must match training)')
     parser.add_argument('--keypoint-mode', action='store_true',
                         help='keypoint-only mode: model has no size head (Phase 1)')
-    parser.add_argument('--fixed-box-size', type=int, default=16,
-                        help='fixed box size (pixels) to assign when using keypoint-mode (default 16)')
     return parser.parse_args()
 
 

@@ -79,7 +79,7 @@ tools/train_entry.sh \
   --nproc 4 --device 0,1,2,3 \
   --batch-size 4 --max-epoch 100 -- \
   --task detection \
-  --keypoint-mode --fixed-box-size 16 \
+  --keypoint-mode \
   --use-fpn --use-deconv --head-conv 256 \
   --det-sigma 0.8 --focal-alpha 0.75 --det-neg-topk-ratio 0.1 \
   --eval-nms-radius 2.0 --head-lr 0.002 \
@@ -121,7 +121,7 @@ python3 Fine-tune/test_detection_vis.py \
   --ckpt checkpoints/1211-115847/best_model.pth \
   --out ./visuals_detection \
   --num 64 \
-  --keypoint-mode --fixed-box-size 16 \
+  --keypoint-mode \
   --use-fpn --use-deconv --head-conv 256
 ```
 
@@ -144,7 +144,6 @@ This produces:
 
 ### Architecture Options
 - **Keypoint-only mode** (`--keypoint-mode`): Removes size head for point-annotation datasets
-- **Fixed box size** (`--fixed-box-size 16`): Post-processing box size for keypoint detections
 - **FPN multi-scale** (`--use-fpn`, `--fpn-levels 3`): Feature pyramid for handling scale variation
 - **Deconv upsampling** (`--use-deconv`): Stride-8 → stride-4 for better spatial resolution
 - **Head capacity** (`--head-conv 256`): Detection head channel width (default: 256)
@@ -217,7 +216,6 @@ All detection features are opt-in via CLI flags. Counting-only experiments remai
 
 ### Model Architecture
 - `--keypoint-mode`: Enable keypoint-only detection (no size head)
-- `--fixed-box-size`: Post-processing box size for keypoints (default: 16)
 - `--use-fpn`: Enable Feature Pyramid Network multi-scale detection
 - `--fpn-levels`: Number of FPN levels (default: 3)
 - `--use-deconv`: Enable deconv upsampling (stride-8 → stride-4)

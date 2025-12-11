@@ -329,7 +329,6 @@ Current status: Detection AP ~37% at epoch 4 with frozen backbone/UNet, using Ce
 
 3. **Trainer flags** (`train.py`, `dm_regression_trainer.py`):
    - Add `--keypoint-mode` flag to toggle 2-head vs 3-head architecture
-   - Add `--fixed-box-size` (default 16) for inference-time box assignment
    - Update loss computation to skip size loss when in keypoint mode
 
 **Expected Results:**
@@ -341,13 +340,13 @@ Current status: Detection AP ~37% at epoch 4 with frozen backbone/UNet, using Ce
 ```bash
 # Train keypoint-only baseline
 tools/train_entry.sh --data-dir .data/DroneRGBT_converted \
-  --task detection --keypoint-mode --fixed-box-size 16 \
+  --task detection --keypoint-mode \
   --freeze-backbone --freeze-unet --freeze-counter \
   --max-epoch 20 --batch-size 4 --nproc 4
 
 # Compare AP with current 3-head version
 python Fine-tune/test_detection_vis.py --ckpt <new_checkpoint> \
-  --keypoint-mode --fixed-box-size 16 --num 64
+  --keypoint-mode --num 64
 ```
 
 ---

@@ -71,10 +71,6 @@ PARAM_FLAG[keypoint_mode]=--keypoint-mode
 PARAM_ALIAS[keypoint_mode]=kp
 PARAM_TYPE[keypoint_mode]=bool
 
-PARAM_FLAG[fixed_box_size]=--fixed-box-size
-PARAM_ALIAS[fixed_box_size]=fb
-PARAM_TYPE[fixed_box_size]=scalar
-
 # ------------------------------
 # Mode-specific configuration
 # ------------------------------
