@@ -6,25 +6,25 @@ set -euo pipefail
 # 2) tiled (SAHI-style)
 # 3) default visualization (moderate threshold + NMS)
 
-CKPT=${1:-checkpoints/1209-205427/best_model.pth}
-DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_DIR=${3:-./.tmp_posttrain/1209-205427_threshold_001}
+CKPT=${1:-checkpoints_rgbt_cc/1211-115847/best_model.pth}
+DATA_DIR=${2:-.data/RGBT-CC_converted}
+OUT_DIR=${3:-./.tmp_posttrain/1211-115847_rgbt_cc}
 NUM=${4:-64}
 DOWNSAMPLE=${5:-4}
 
-MIN_SCORE_RAW=0.01
-MIN_SCORE_TILE=0.01
+MIN_SCORE_RAW=0.25
+MIN_SCORE_TILE=0.25
 MAX_DETS=150
 NMS_RADIUS=4.0  # Match training eval_nms_radius (was 2.0, causing AP discrepancy)
 NMS_KERNEL=3
 HEAD_CONV=256
 USE_DECONV=1
-KEYPOINT_MODE=0
+KEYPOINT_MODE=1
 FIXED_BOX_SIZE=16
 USE_FPN=1
-SCORE_THRESH_RAW=0.01
-SCORE_THRESH_TILE=0.01
-SCORE_THRESH_ORIG=0.01
+SCORE_THRESH_RAW=0.25
+SCORE_THRESH_TILE=0.25
+SCORE_THRESH_ORIG=0.25
 SOFT_NMS_SIGMA_RAW=
 SOFT_NMS_SIGMA_TILE=
 SOFT_NMS_SIGMA_ORIG=

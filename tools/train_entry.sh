@@ -19,15 +19,15 @@ set -euo pipefail
 # ============================================================================
 
 # --- GPU / Distributed Training ---
-NPROC=4
-DEVICE="0,1,2,3"
+NPROC=1
+DEVICE="0"
 NUM_WORKERS=4
 DDP_TIMEOUT=3600  # DDP watchdog timeout in seconds (default: 1800=30min, set to 3600=1hr)
 
 # --- Data & Paths ---
-DATA_DIR=".data/DroneRGBT_converted"
-SAVE_DIR="./checkpoints"
-RESUME=".weights/drone_rgbt_best_494_781.pth"
+DATA_DIR=".data/RGBT-CC_converted"
+SAVE_DIR="./checkpoints_rgbt_cc"
+RESUME=".weights/rgbt_cc_best_958_1599.pth"
 
 # --- Task Selection & Freezing ---
 TASK="detection"
@@ -40,17 +40,17 @@ UNFREEZE_EPOCH=-1
 LR=1e-5
 WEIGHT_DECAY=0.0001
 BATCH_SIZE=1
-MAX_EPOCH=100
+MAX_EPOCH=150
 CROP_SIZE=224
 
 # --- Checkpointing & Early Stopping ---
 MAX_MODEL_NUM=1
-VAL_EPOCH=2  # Validate every 2 epochs to reduce DDP sync overhead with prime-sized test set
+VAL_EPOCH=1
 VAL_START=0
 SAVE_ALL_BEST=0
-DET_PATIENCE=10
+DET_PATIENCE=15
 
-# --- Evaluation ---
+# --- Detection Evaluation ---
 AP_DIST_THRESH=8.0
 DOWNSAMPLE_RATIO=8
 OUTPUT_STRIDE=4
@@ -62,13 +62,23 @@ NMS_KERNEL=3
 USE_DET_ADAPTOR=1
 USE_FPN=1
 
-# --- Phase 1: Keypoint-Only Mode ---
+# --- Keypoint-Only Mode ---
 KEYPOINT_MODE=1
 FIXED_BOX_SIZE=16
 
+# --- Data Augmentation for Detection ---
+AUG_SCALE_MIN=0.5
+AUG_SCALE_MAX=2.0
+AUG_FLIP=1
+AUG_CROP_SIZE=224
+
+# --- Thermal Preprocessing (Phase B) ---
+THERMAL_CLAHE=1
+THERMAL_CLAHE_CLIP=2.0
+
 # --- Detection Loss Configuration ---
 DET_WEIGHT=1.0
-DET_POS_WEIGHT=7.0
+DET_POS_WEIGHT=15.0
 USE_BCE_LOGITS=1
 DET_USE_GN=1
 DET_SIGMA=2.0
@@ -76,17 +86,17 @@ HEAD_LR=0.002
 
 # --- Focal Loss (Detection) ---
 USE_FOCAL_HEATMAP=1
-FOCAL_ALPHA=0.25
-FOCAL_GAMMA=1.5
+FOCAL_ALPHA=0.35
+FOCAL_GAMMA=2.5
 
 # --- Hard Negative Mining & Size Loss ---
 DET_NEG_TOPK_RATIO=0.05
 USE_IOU_SIZE=1
-IOU_WEIGHT=0.3
+IOU_WEIGHT=0.5
 
 # --- Inference-time NMS Options ---
 EVAL_NMS="radius"
-EVAL_NMS_RADIUS=2.0  # Stricter NMS for honest AP reporting (was 4.0; Phase 2 analysis shows it inflates metrics)
+EVAL_NMS_RADIUS=6.0
 EVAL_SOFT_NMS_SIGMA=0.5
 
 # --- Counting Task Parameters (DM-Count) ---
@@ -155,6 +165,16 @@ DETECTION HEAD (CenterNet-style):
 PHASE 1 - KEYPOINT MODE:
   --keypoint-mode              Enable keypoint-only mode (no size head)
   --fixed-box-size N           Fixed box size in pixels for inference (default: 16)
+
+DATA AUGMENTATION (Detection):
+  --aug-scale-min S            Minimum scale factor for random resize (default: 1.0, no aug)
+  --aug-scale-max S            Maximum scale factor for random resize (default: 1.0, no aug)
+  --aug-flip                   Enable random horizontal flip augmentation (default: disabled)
+  --aug-crop-size N            Random crop size in pixels (0 to disable, default: 0)
+
+THERMAL PREPROCESSING (Phase B):
+  --thermal-clahe              Enable CLAHE contrast enhancement (default: yes)
+  --thermal-clahe-clip C       CLAHE clip limit (default: 2.0)
 
 DETECTION LOSS:
   --det-weight W               Detection loss weight (default: 1.0)
@@ -302,6 +322,26 @@ while [[ $# -gt 0 ]]; do
     --fixed-box-size)
       FIXED_BOX_SIZE="$2"; shift 2;;
     
+    # Data Augmentation
+    --aug-scale-min)
+      AUG_SCALE_MIN="$2"; shift 2;;
+    --aug-scale-max)
+      AUG_SCALE_MAX="$2"; shift 2;;
+    --aug-flip)
+      AUG_FLIP=1; shift 1;;
+    --no-aug-flip)
+      AUG_FLIP=0; shift 1;;
+    --aug-crop-size)
+      AUG_CROP_SIZE="$2"; shift 2;;
+    
+    # Thermal Preprocessing (Phase B)
+    --thermal-clahe)
+      THERMAL_CLAHE=1; shift 1;;
+    --no-thermal-clahe)
+      THERMAL_CLAHE=0; shift 1;;
+    --thermal-clahe-clip)
+      THERMAL_CLAHE_CLIP="$2"; shift 2;;
+    
     # Detection Loss
     --det-weight)
       DET_WEIGHT="$2"; shift 2;;
@@ -433,9 +473,19 @@ echo "  nms-kernel:     $NMS_KERNEL"
 echo "  use-det-adaptor: $USE_DET_ADAPTOR"
 echo "  use-fpn:        $USE_FPN"
 echo ""
-echo "--- Phase 1: Keypoint Mode ---"
+echo "--- Keypoint Mode ---"
 echo "  keypoint-mode:   $KEYPOINT_MODE"
 echo "  fixed-box-size:  $FIXED_BOX_SIZE"
+echo ""
+echo "--- Data Augmentation ---"
+echo "  aug-scale-min:   $AUG_SCALE_MIN"
+echo "  aug-scale-max:   $AUG_SCALE_MAX"
+echo "  aug-flip:        $AUG_FLIP"
+echo "  aug-crop-size:   $AUG_CROP_SIZE"
+echo ""
+echo "--- Thermal Preprocessing ---"
+echo "  thermal-clahe:       $THERMAL_CLAHE"
+echo "  thermal-clahe-clip:  $THERMAL_CLAHE_CLIP"
 echo ""
 echo "--- Detection Loss ---"
 echo "  det-weight:       $DET_WEIGHT"
@@ -507,6 +557,12 @@ if [[ "$NPROC" -eq 1 ]]; then
     $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" )
     $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" )
     --fixed-box-size "${FIXED_BOX_SIZE}"
+    --aug-scale-min "${AUG_SCALE_MIN}"
+    --aug-scale-max "${AUG_SCALE_MAX}"
+    $( [[ "$AUG_FLIP" -eq 1 ]] && echo "--aug-flip" )
+    --aug-crop-size "${AUG_CROP_SIZE}"
+    $( [[ "$THERMAL_CLAHE" -eq 1 ]] && echo "--thermal-clahe" )
+    --thermal-clahe-clip "${THERMAL_CLAHE_CLIP}"
     --det-weight "${DET_WEIGHT}"
     --det-pos-weight "${DET_POS_WEIGHT}"
     $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" )
@@ -564,6 +620,12 @@ else
     $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" )
     $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" )
     --fixed-box-size "${FIXED_BOX_SIZE}"
+    --aug-scale-min "${AUG_SCALE_MIN}"
+    --aug-scale-max "${AUG_SCALE_MAX}"
+    $( [[ "$AUG_FLIP" -eq 1 ]] && echo "--aug-flip" )
+    --aug-crop-size "${AUG_CROP_SIZE}"
+    $( [[ "$THERMAL_CLAHE" -eq 1 ]] && echo "--thermal-clahe" )
+    --thermal-clahe-clip "${THERMAL_CLAHE_CLIP}"
     --det-weight "${DET_WEIGHT}"
     --det-pos-weight "${DET_POS_WEIGHT}"
     $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" )

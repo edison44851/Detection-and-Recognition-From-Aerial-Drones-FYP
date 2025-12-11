@@ -724,3 +724,127 @@ If FPN implementation proves too complex or memory-intensive:
 | Training instability | Low | Medium | Use gradient clipping, warmup scheduler, monitor grad norms | ✓ No issues observed |
 
 **Status:** ✅ Phase 1 and Phase 2 implementation completed. Phase 3 removed as it was confirmed not useful. Project ready for final documentation and thesis write-up.
+
+---
+
+# RGBT-CC Dataset Adaptation Plan (2025-12-10)
+
+## Problem Statement
+
+Current RGBT-CC detection performance is very poor (AP 0.15–0.2) compared to DroneRGBT baseline (AP 0.48). Root causes:
+
+1. **Extreme scale variation:** RGBT-CC contains heads ranging from tiny pixels (~5×5) to large patches (~100×100), whereas DroneRGBT has relatively consistent scale. Current model uses fixed 16px boxes and no scale augmentation.
+
+2. **Thermal channel quality:** RGBT-CC thermal images show pure orange coloring with minimal structure, suggesting low dynamic range. Current preprocessing uses hardcoded normalization stats that may not match RGBT-CC distribution.
+
+3. **No data augmentation:** Detection dataset (`dm_detection.py`) currently has zero augmentation—only normalization. No multi-scale training, cropping, or flipping to handle scale variation or domain differences.
+
+4. **Dataset size mismatch:** DroneRGBT (40 images) is tiny; RGBT-CC (1030 train + 800 test + 200 val) is much larger. Model trained on small DroneRGBT does not generalize.
+
+## Constraints
+
+- **Backbone cannot be unfrozen** for RGBT-CC (institutional requirement)
+- Must work with existing `dm_detection.py` dataset loader structure
+- Cannot modify core counting task performance
+
+## Solution: Multi-Scale Training + Thermal Preprocessing + Data Augmentation
+
+### Phase A: Add Data Augmentation to `dm_detection.py` (Recommended Start)
+
+**Rationale:** Current 0% augmentation is the easiest win. Scale variation handling starts here.
+
+**Changes:**
+
+1. **Random resize augmentation (0.5x–2.0x scale):**
+   - Before creating heatmaps, randomly resize image and adjust point coordinates
+   - Regenerate heatmap/size/offset maps for resized image
+   - Allows model to see same object at multiple scales during training
+
+2. **Random flip augmentation (50% horizontal):**
+   - Flip RGB and thermal images together
+   - Mirror point x-coordinates accordingly
+   - Standard augmentation, improves robustness
+
+3. **Random crop augmentation:**
+   - Crop random 224×224 regions (or adaptive based on image size)
+   - Adjust point coordinates to crop space
+   - Filter out points outside crop region
+   - Simulates localized detection
+
+**Implementation location:** `Fine-tune/datasets/dm_detection.py` in `__getitem__` method
+
+**Expected improvement:** 0.15–0.2 → 0.25–0.30 AP (50% relative gain)
+
+**Configuration flags:**
+```bash
+--aug-scale 0.5 2.0     # Random resize range
+--aug-flip 0.5          # Flip probability
+--aug-crop 224          # Crop size (0 = disable)
+```
+
+### Phase B: Improve Thermal Preprocessing
+
+**Rationale:** RGBT-CC thermal images need contrast enhancement. Normalization stats should match actual dataset distribution.
+
+**Changes:**
+
+1. **CLAHE (Contrast Limited Adaptive Histogram Equalization):**
+   - Apply to thermal images before normalization to stretch dynamic range
+   - Makes thermal features more informative without oversaturation
+   - Standard preprocessing for thermal imagery
+
+2. **Recalculate thermal normalization stats on RGBT-CC:**
+   - Current hardcoded stats: mean=[0.492, 0.168, 0.430], std=[0.317, 0.174, 0.191]
+   - Compute actual mean/std on RGBT-CC training set thermal images
+   - Ensure proper normalization matching dataset distribution
+
+**Implementation location:** `Fine-tune/datasets/dm_detection.py` in `__getitem__` after loading thermal image
+
+**Expected improvement:** 0.25–0.30 → 0.28–0.32 AP (10% relative gain)
+
+**Code sketch:**
+```python
+import cv2
+
+# In dm_detection.py __getitem__:
+t = Image.open(t_p).convert('RGB')
+t_np = np.array(t)  # Convert to numpy for CLAHE
+
+# Apply CLAHE to improve contrast
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+t_lab = cv2.cvtColor(t_np, cv2.COLOR_RGB2LAB)
+t_lab[:,:,0] = clahe.apply(t_lab[:,:,0])
+t_np = cv2.cvtColor(t_lab, cv2.COLOR_LAB2RGB)
+
+t = Image.fromarray(t_np)
+timg = self.t_transform(t)
+```
+
+### Phase C: Strengthen Detection Head Loss & Regularization
+
+**Rationale:** With frozen backbone, only detection head can adapt. Strengthen it with better loss configuration.
+
+**Changes:**
+
+1. **Increase focal loss gamma (1.5 → 2.0):**
+   - Penalizes hard negatives more aggressively
+   - Better for imbalanced sparse heatmaps
+   - Flag: `--focal-gamma 2.0`
+
+2. **Increase positive weight (7.0 → 12.0):**
+   - RGBT-CC has variable crowd density; penalize missed detections heavily
+   - Focal loss + positive weight combination addresses class imbalance
+   - Flag: `--det-pos-weight 12.0`
+
+3. **Lower NMS/confidence threshold (0.1 → 0.05):**
+   - Small objects in RGBT-CC may have lower confidence
+   - Lower threshold catches more small detections before precision collapses
+   - Flag: `--det-score-threshold 0.05`
+
+4. **Higher hard negative mining ratio:**
+   - Keep more difficult negatives in loss computation
+   - Helps head learn discriminative features
+   - Flag: `--det-neg-topk-ratio 0.1` (from 0.05)
+
+**Expected improvement:** 0.28–0.32 → 0.32–0.36 AP (15% relative gain)
+

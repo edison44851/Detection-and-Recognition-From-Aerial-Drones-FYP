@@ -105,6 +105,22 @@ def parse_args():
                         help='keypoint-only mode: use only heatmap + offset heads, skip size head (for point annotations)')
     parser.add_argument('--fixed-box-size', type=int, default=16,
                         help='fixed box size (pixels) for inference when using keypoint-mode (default 16)')
+    
+    # Data augmentation options for detection training
+    parser.add_argument('--aug-scale-min', type=float, default=1.0,
+                        help='minimum scale factor for random resize augmentation (default 1.0, no augmentation)')
+    parser.add_argument('--aug-scale-max', type=float, default=1.0,
+                        help='maximum scale factor for random resize augmentation (default 1.0, no augmentation)')
+    parser.add_argument('--aug-flip', action='store_true',
+                        help='enable random horizontal flip augmentation for training')
+    parser.add_argument('--aug-crop-size', type=int, default=0,
+                        help='random crop size (0 to disable); crops random square regions from training images')
+    
+    # Phase B: Thermal preprocessing
+    parser.add_argument('--thermal-clahe', action='store_true', default=True,
+                        help='enable CLAHE contrast enhancement on thermal images (default True)')
+    parser.add_argument('--thermal-clahe-clip', type=float, default=2.0,
+                        help='CLAHE clip limit for contrast enhancement (default 2.0)')
                         
     # For DM-Count
     parser.add_argument('--wot', type=float, default=0.1, help='weight on OT loss')
