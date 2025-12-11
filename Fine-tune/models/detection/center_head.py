@@ -9,9 +9,11 @@ class CenterHead(nn.Module):
     Upgraded to match CenterNet's proven architecture:
     - Optional deconv/upsample layer to reduce stride (8→4)
     - Wider heads with proper channel capacity (head_conv=256)
-    - Heatmap bias initialized to -2.19 for focal loss
+    - Heatmap bias initialized to -4.6 for drone datasets (more conservative)
     - CenterNet-style 2-layer heads per task
-    - **NEW (Phase 1)**: keypoint_only mode - skip size head for point annotations
+    - **Phase 1**: keypoint_only mode - skip size head for point annotations
+    - **Phase 2**: Boundary suppression - reduces false positives at image edges
+    - Optimized initialization for small object detection in drone images
 
     Expects backbone features of shape [B, C, H, W] (C=768 by default at stride-8).
     Outputs (at stride-4 if use_deconv=True, else stride-8):
@@ -21,12 +23,15 @@ class CenterHead(nn.Module):
     """
 
     def __init__(self, in_channels=768, head_conv=256, use_logits: bool = False, 
-                 use_gn: bool = False, use_deconv: bool = True, keypoint_only: bool = False):
+                 use_gn: bool = False, use_deconv: bool = True, keypoint_only: bool = False,
+                 boundary_suppress: bool = True, suppress_margin: int = 4):
         super().__init__()
         self.use_logits = use_logits
         self.use_gn = use_gn
         self.use_deconv = use_deconv
         self.keypoint_only = keypoint_only
+        self.boundary_suppress = boundary_suppress
+        self.suppress_margin = suppress_margin
         
         # Upsampling module: reduce stride from 8 to 4 (CenterNet uses stride-4 output)
         if use_deconv:
@@ -52,8 +57,9 @@ class CenterHead(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(head_conv, 1, kernel_size=1, bias=True)
         )
-        # CRITICAL: Initialize heatmap bias to -2.19 (ln(0.1/0.9) for focal loss)
-        nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
+        # CRITICAL: Initialize heatmap bias properly for drone dataset
+        # For small objects in drone images, we need different initialization
+        nn.init.constant_(self.heatmap_head[-1].bias, -4.6)  # More conservative for drone data
 
         # Size head (width, height) — SKIP in keypoint-only mode
         if not self.keypoint_only:
@@ -83,7 +89,7 @@ class CenterHead(nn.Module):
         return nn.GroupNorm(1, channels)
     
     def _init_weights(self):
-        """Initialize weights following CenterNet convention."""
+        """Initialize weights following CenterNet convention - FIXED for stability."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -95,11 +101,40 @@ class CenterHead(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.ConvTranspose2d):
-                # Deconv weights: use bilinear initialization
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                # Deconv weights: use bilinear initialization with smaller scale
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu', a=0.1)
         
-        # Re-initialize heatmap bias to -2.19 (done after general init)
-        nn.init.constant_(self.heatmap_head[-1].bias, -2.19)
+        # Re-initialize heatmap bias for drone dataset
+        nn.init.constant_(self.heatmap_head[-1].bias, -4.6)
+
+    def _apply_boundary_suppression(self, heatmap):
+        """Apply boundary suppression to reduce false positives at edges - FIXED scaling"""
+        if not self.boundary_suppress:
+            return heatmap
+        
+        B, C, H, W = heatmap.shape
+        
+        # Create boundary mask with proper scaling (0.5-1.0 range)
+        margin = self.suppress_margin
+        mask = torch.ones(H, W, device=heatmap.device)
+        
+        # Gentle suppression at edges (0.7), not complete removal
+        mask[:margin, :] = 0.7
+        mask[-margin:, :] = 0.7
+        mask[:, :margin] = 0.7
+        mask[:, -margin:] = 0.7
+        
+        # Slightly stronger suppression at corners (0.5)
+        corner_size = margin * 2
+        mask[:corner_size, :corner_size] = 0.5
+        mask[:corner_size, -corner_size:] = 0.5
+        mask[-corner_size:, :corner_size] = 0.5
+        mask[-corner_size:, -corner_size:] = 0.5
+        
+        mask = mask.view(1, 1, H, W).expand(B, C, H, W)
+        
+        # Apply suppression with proper scaling
+        return heatmap * mask
 
     def forward(self, feats):
         # Upsample features (stride 8 → 4)
@@ -107,6 +142,10 @@ class CenterHead(nn.Module):
 
         # Task-specific heads
         heat = self.heatmap_head(x)
+        
+        # Apply boundary suppression (gentle)
+        if self.boundary_suppress:
+            heat = self._apply_boundary_suppression(heat)
         
         # Size head: skip if keypoint_only mode
         if self.keypoint_only:

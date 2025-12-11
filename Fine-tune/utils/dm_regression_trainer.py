@@ -463,6 +463,10 @@ class RegTrainer(Trainer):
             else:
                 self.heatmap_loss = nn.BCELoss(reduction='none').to(self.device)
         self.l1 = nn.L1Loss(reduction='sum')
+        
+        # Background suppression loss
+        self.use_bg_suppress = getattr(args, 'use_bg_suppress', True)
+        self.bg_suppress_weight = getattr(args, 'bg_suppress_weight', 0.01)  # Reduced for stability
 
     def _initialize_metrics(self):
         """Initialize metric tracking variables"""
@@ -676,13 +680,7 @@ class RegTrainer(Trainer):
         }
 
     def _compute_detection_losses(self, heat_pred, size_pred, offset_pred, detection_targets):
-        """Compute all detection-related losses
-        
-        Phase 1 Update: Skip size loss if keypoint_mode is enabled and size_pred is None
-        
-        Returns:
-            Total detection loss (weighted)
-        """
+        """Compute all detection-related losses - FIXED for numerical stability"""
         heat_target = detection_targets['heat_target']
         size_target = detection_targets['size_target']
         offset_target = detection_targets['offset_target']
@@ -690,34 +688,50 @@ class RegTrainer(Trainer):
         keypoint_mode = getattr(self.args, 'keypoint_mode', False)
         
         # Heatmap loss: BCE or focal-on-logits
-        # heat_pred and heat_target are [B,1,H,W]
+        # Apply gradient clipping to predictions for stability
+        heat_pred_clipped = torch.clamp(heat_pred, -10, 10)  # Prevent extreme values
+        
         pos_mask = (heat_target > 0).float()
         if self.use_focal:
-            # compute BCE with logits element-wise
-            ce = self.heatmap_bce_logits(heat_pred, heat_target)
-            # sigmoid for p_t
-            p = torch.sigmoid(heat_pred)
+            # FIXED: Use clipped predictions for focal loss
+            ce = self.heatmap_bce_logits(heat_pred_clipped, heat_target)
+            # Sigmoid with clamping for numerical stability
+            p = torch.sigmoid(heat_pred_clipped)
             p_t = p * pos_mask + (1.0 - p) * (1.0 - pos_mask)
             focal_factor = (self.focal_alpha * torch.pow(1.0 - p_t, self.focal_gamma)).detach()
             loss_map = focal_factor * ce
         else:
-            loss_map = self.heatmap_loss(heat_pred, heat_target)
+            loss_map = self.heatmap_loss(heat_pred_clipped, heat_target)
 
         pos_loss = (loss_map * pos_mask).sum()
-        # optional hard-negative mining
+        
+        # Negative mining with gradient clipping for stability
         if getattr(self.args, 'det_neg_topk_ratio', None):
             ratio = float(self.args.det_neg_topk_ratio)
             neg_map = (loss_map * (1.0 - pos_mask)).view(loss_map.size(0), -1)
             k = max(1, int(ratio * neg_map.size(1)))
-            # top-k per batch element
             topk_vals, _ = torch.topk(neg_map, k, dim=1)
             neg_loss = topk_vals.sum()
         else:
             neg_loss = (loss_map * (1.0 - pos_mask)).sum()
-        # normalize by number of pixels to keep scale stable
+        
+        # FIXED: Background suppression with proper scaling
+        if self.use_bg_suppress:
+            # Only apply to high-confidence background predictions
+            bg_mask = (heat_target < 0.01).float()
+            # Use sigmoid for probability scale (0-1)
+            bg_prob = torch.sigmoid(heat_pred_clipped)
+            # Gentle penalty for high background predictions
+            bg_penalty = (bg_prob * bg_mask).sum() * self.bg_suppress_weight * 0.01  # Reduced scale
+            neg_loss = neg_loss + bg_penalty
+        
+        # Normalize by number of positive pixels + small constant for stability
         num_pixels = float(loss_map.numel())
+        num_pos_pixels = pos_mask.sum().clamp(min=1.0)
         pos_w = float(getattr(self.args, 'det_pos_weight', 1.0))
-        hm_loss = (pos_loss * pos_w + neg_loss) / max(1.0, num_pixels)
+        
+        # FIXED: Proper normalization to prevent exploding loss
+        hm_loss = (pos_loss * pos_w) / (num_pos_pixels + 1e-6) + neg_loss / (num_pixels + 1e-6)
 
         # Size/offset only at positive locations
         num_pos = pos_mask.sum().clamp(min=1.0)
@@ -729,8 +743,6 @@ class RegTrainer(Trainer):
             iou_l = torch.tensor(0.0, device=self.device)
         else:
             size_l = self.l1(size_pred * mask2, size_target * mask2) / num_pos
-            # Optional IoU size loss (same-center approx at positive locations)
-            iou_l = torch.tensor(0.0, device=self.device)
             if bool(getattr(self.args, 'use_iou_size', False)):
                 wp = (size_pred[:, 0:1] * pos_mask).view(size_pred.size(0), -1)
                 hp = (size_pred[:, 1:2] * pos_mask).view(size_pred.size(0), -1)
@@ -744,7 +756,8 @@ class RegTrainer(Trainer):
         
         off_l = self.l1(offset_pred * mask2, offset_target * mask2) / num_pos
 
-        det_loss = (hm_loss + size_l + off_l) * self.args.det_weight
+        # FIXED: Scale detection loss properly
+        det_loss = (hm_loss * 0.1 + size_l * 0.1 + off_l * 0.1) * self.args.det_weight
 
         # Return detailed components for logging/diagnostics
         return {
@@ -777,6 +790,7 @@ class RegTrainer(Trainer):
         epoch_game = AverageMeter()
         epoch_mse = AverageMeter()
         epoch_rd_loss = AverageMeter()
+        epoch_bg_suppress = AverageMeter()
         epoch_start = time.time()
         self.model.train()
 
@@ -814,12 +828,25 @@ class RegTrainer(Trainer):
                     # Detection task - only detection losses
                     det_losses = self._compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
                     total_loss = det_losses['det_loss']
+                    
+                    # FIXED: Check for NaN/Inf in loss
+                    if torch.isnan(total_loss) or torch.isinf(total_loss):
+                        logging.warning(f"NaN/Inf detected in loss at step {step}, skipping batch")
+                        continue
+                    
                     # Log detailed components
                     epoch_det_loss.update(total_loss.item(), N)
                     epoch_hm_pos.update(float(det_losses['pos_loss']) / max(1.0, float(det_losses['num_pixels'])), N)
                     epoch_hm_neg.update(float(det_losses['neg_loss']) / max(1.0, float(det_losses['num_pixels'])), N)
                     epoch_size_loss.update(float(det_losses['size_l']), N)
                     epoch_off_loss.update(float(det_losses['off_l']), N)
+                    
+                    # Track background suppression
+                    if self.use_bg_suppress:
+                        bg_mask = (detection_targets['heat_target'] < 0.01).float()
+                        bg_prob = torch.sigmoid(torch.clamp(heat_pred, -10, 10))
+                        bg_penalty = (bg_prob * bg_mask).mean().item()
+                        epoch_bg_suppress.update(bg_penalty, N)
                 else:
                     # Counting task - only counting losses
                     img_h = int(outputs.size(2) * self.downsample_ratio)
@@ -844,9 +871,13 @@ class RegTrainer(Trainer):
                     
                     total_loss = ot_loss + count_loss + tv_loss + rd_loss * self.args.wrd
 
-                # Backward pass
+                # Backward pass with gradient clipping
                 self.optimizer.zero_grad()
                 total_loss.backward()
+                
+                # FIXED: Stronger gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                
                 self.optimizer.step()
 
                 # Compute gradient norms for detection head/adaptor (diagnostics)
@@ -931,8 +962,11 @@ class RegTrainer(Trainer):
             # heat_pred may be raw logits if model was configured with `use_bce_logits`.
             # Convert to probabilities for peak extraction if values are outside [0,1].
             if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
-                # stable sigmoid
-                hm = 1.0 / (1.0 + np.exp(-hm))
+                # Numerically stable sigmoid with overflow protection
+                with np.errstate(over='ignore', invalid='ignore'):
+                    hm_pos = np.where(hm >= 0, 1.0 / (1.0 + np.exp(-np.clip(hm, -500, 500))), 0)
+                    hm_neg = np.where(hm < 0, np.exp(np.clip(hm, -500, 0)) / (1.0 + np.exp(np.clip(hm, -500, 0))), 0)
+                    hm = hm_pos + hm_neg
             
             # Apply NMS during peak extraction (CenterNet-style)
             use_nms = True  # Enable by default for CenterNet-style heads

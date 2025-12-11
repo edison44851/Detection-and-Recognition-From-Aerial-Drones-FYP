@@ -36,7 +36,24 @@ if __name__ == '__main__':
     model.to(device)
     model_path = args.save_dir
     checkpoint = torch.load(model_path, device)
-    model.load_state_dict(checkpoint)
+    
+    # Filter checkpoint to only load counting weights (exclude detection keys)
+    counting_keys = ['backbone.', 'unet.', 'reg_layer.']
+    filtered_checkpoint = {
+        k: v for k, v in checkpoint.items() 
+        if any(k.startswith(prefix) for prefix in counting_keys)
+    }
+    
+    print(f'\nCheckpoint keys: {len(checkpoint)} total')
+    print(f'Filtered counting keys: {len(filtered_checkpoint)} loaded')
+    print(f'Detection keys skipped: {len(checkpoint) - len(filtered_checkpoint)}')
+    
+    missing, unexpected = model.load_state_dict(filtered_checkpoint, strict=False)
+    if missing:
+        print(f'\nMissing keys (not in checkpoint): {len(missing)}')
+    if unexpected:
+        print(f'Unexpected keys (filtered out): {len(unexpected)}')
+    
     model.eval()
 
     print('testing...')

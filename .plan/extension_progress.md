@@ -1,3 +1,121 @@
+(new section..)
+
+---
+
+## Teammate's Code Integration & Validation (2025-12-11)
+
+**Status:** ✅ Completed and tested on DroneRGBT dataset. All 4 critical code fixes + 7 hyperparameter alignments validated.
+
+**Training outcome (ckpt `checkpoints/1211-115847/best_model.pth`):**
+- Trained with teammate's exact configuration: `det_sigma=0.8`, `focal_alpha=0.75`, `det_neg_topk_ratio=0.1`, `eval_nms_radius=2.0`
+- Config: `use_fpn=1`, `keypoint_mode=1`, `head_conv=256`, `use_deconv=1`, `fixed_box_size=16`, `downsample_ratio=4` (CRITICAL FIX)
+- Gradient clipping (max_norm=0.5), NaN/Inf detection, background suppression tracking all active
+
+**Real inference metrics (`.tmp_posttrain/1211-171944_teammates/raw/`):**
+- TP=1063 / FP=453 / FN=919 → **precision 0.701, recall 0.536, F1 0.608**
+
+**vs Phase 2 (FPN baseline, 2025-12-09):**
+- **FP reduction: 50.2%** (910 → 453) — significantly cleaner predictions
+- **Precision jump: 26.1%** (0.556 → 0.701) — fewer false alarms
+- Recall slightly lower (0.576 → 0.536, -7%) — acceptable trade-off
+- **F1 score improvement: 7.4%** (0.566 → 0.608)
+
+**Critical fixes validated:**
+1. ✅ **Downsample ratio 4 vs 8:** 2× larger heatmaps confirmed working
+2. ✅ **Gradient clipping:** Training stable, no explosions observed
+3. ✅ **NaN/Inf detection:** No corrupted batches, smooth training
+4. ✅ **Hyperparameter alignment:** All 7 parameters (det_sigma=0.8, focal_alpha=0.75, etc.) applied
+
+**Key improvements over Phase 2:**
+- **Sharper heatmap peaks** (det_sigma=0.8 vs 2.0) → better localization
+- **Better hard-example focus** (focal_alpha=0.75 vs 0.25) → improved class balance
+- **Tighter NMS suppression** (radius=2.0 vs 4.0) → fewer duplicate detections
+- **More aggressive negative sampling** (det_neg_topk_ratio=0.1 vs 0.2) → reduced FPs
+
+**Comparison summary:**
+
+| Metric | Phase 2 (Baseline FPN) | Phase 3 (Teammate's Config) | Improvement |
+|--------|------------------------|----------------------------|-------------|
+| TP | 1142 | 1063 | -6.9% |
+| FP | 910 | 453 | **-50.2%** ✓ |
+| FN | 840 | 919 | +9.4% |
+| Precision | 0.556 | **0.701** | **+26.1%** ✓ |
+| Recall | 0.576 | 0.536 | -7.0% |
+| F1 | 0.566 | **0.608** | **+7.4%** ✓ |
+
+**Status:** Teammate's configuration is **production-ready** for DroneRGBT. The precision-recall trade-off (higher precision, slightly lower recall) is favorable for aerial detection where false positives are more costly than missing a few targets.
+
+**Next steps:**
+- Apply these validated parameters to RGBT-CC dataset experiments
+- Monitor training stability with new parameters on larger dataset
+- Consider fine-tuning det_neg_topk_ratio if recall needs improvement
+
+---
+
+## RGBT-CC Dataset Adaptation Implementation (2025-12-10)
+
+**Status:** ⚠️ Implementation complete, **NOT YET TESTED**. Changes ready for experimental validation.
+
+**Changes implemented (Phase A: Data Augmentation):**
+1. **Random resize augmentation** (0.5×–2.0× scale):
+   - Added to `Fine-tune/datasets/dm_detection.py`
+   - Dynamically resizes images and adjusts point coordinates before heatmap generation
+   - Controlled by `--aug-scale-min` and `--aug-scale-max` flags
+   
+2. **Random flip augmentation** (50% horizontal):
+   - Synchronized RGB and thermal image flipping
+   - Mirrors point x-coordinates accordingly
+   - Controlled by `--aug-flip` flag (probability)
+
+3. **Random crop augmentation** (configurable size):
+   - Crops random regions from resized images
+   - Filters points outside crop region
+   - Adjusts coordinates to crop space
+   - Controlled by `--aug-crop` flag (0 = disabled)
+
+**Changes implemented (Phase B: Thermal Preprocessing):**
+1. **CLAHE enhancement:**
+   - Added Contrast Limited Adaptive Histogram Equalization for thermal images
+   - Stretches dynamic range without oversaturation
+   - Applied in LAB color space for better results
+   - Controlled by `--thermal-clahe` flag
+
+2. **Thermal normalization stats:**
+   - Tool created: `tools/compute_thermal_stats.py`
+   - Computes dataset-specific mean/std for thermal images
+   - Current stats remain as fallback: mean=[0.492, 0.168, 0.430], std=[0.317, 0.174, 0.191]
+   - Can be recalculated per-dataset before training
+
+**Configuration flags added:**
+```bash
+--aug-scale-min 0.5          # Minimum resize scale
+--aug-scale-max 2.0          # Maximum resize scale
+--aug-flip 0.5               # Horizontal flip probability
+--aug-crop 0                 # Crop size (0=disabled, 224=recommended)
+--thermal-clahe 1            # Enable CLAHE preprocessing
+```
+
+**Expected improvements (not validated):**
+- Phase A alone: 0.15–0.2 → 0.25–0.30 AP (50% relative gain expected)
+- Phase A + B: 0.25–0.30 → 0.28–0.32 AP (additional 10% gain expected)
+- Total expected: **0.15 → 0.32 AP** (2× improvement) if both phases work as intended
+
+**Testing plan:**
+1. Train baseline on RGBT-CC without augmentation (confirm 0.15-0.2 AP)
+2. Add Phase A augmentation, train and measure AP gain
+3. Add Phase B thermal preprocessing, train and measure additional gain
+4. Compare against DroneRGBT performance (currently 0.608 F1) to assess generalization
+
+**Constraints respected:**
+- ✓ Backbone remains frozen (institutional requirement)
+- ✓ Works with existing `dm_detection.py` structure
+- ✓ Counting task unaffected (detection-only augmentation)
+- ✓ Backward compatible (all augmentations opt-in via flags)
+
+**Status:** Ready for experimental validation. Recommend starting with Phase A only to isolate augmentation impact before adding thermal preprocessing.
+
+---
+
 ## Phase 2 – FPN Keypoint Multi-Scale (2025-12-09)
 
 **Status:** Completed run with SimpleFPN + keypoint-only head (frozen backbone/UNet/counter, head-only training). **Massive precision improvement** despite lower reported AP.

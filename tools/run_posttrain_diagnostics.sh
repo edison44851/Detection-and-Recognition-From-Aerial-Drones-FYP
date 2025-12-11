@@ -6,9 +6,9 @@ set -euo pipefail
 # 2) tiled (SAHI-style)
 # 3) default visualization (moderate threshold + NMS)
 
-CKPT=${1:-checkpoints_rgbt_cc/1211-115847/best_model.pth}
-DATA_DIR=${2:-.data/RGBT-CC_converted}
-OUT_DIR=${3:-./.tmp_posttrain/1211-115847_rgbt_cc}
+CKPT=${1:-checkpoints/1211-171944/best_model.pth}
+DATA_DIR=${2:-.data/DroneRGBT_converted}
+OUT_DIR=${3:-./.tmp_posttrain/1211-171944}
 NUM=${4:-64}
 DOWNSAMPLE=${5:-4}
 
