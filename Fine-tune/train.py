@@ -1,3 +1,142 @@
+# from utils.dm_regression_trainer import RegTrainer
+# import argparse
+# import os
+# import torch
+# args = None
+
+# def parse_args():
+#     parser = argparse.ArgumentParser(description='Train ')
+#     parser.add_argument('--data-dir', default=r'',
+#                         help='training data directory')
+#     parser.add_argument('--save-dir', default='',
+#                         help='directory to save models.')
+#     parser.add_argument('--lr', type=float, default=1e-5,
+#                         help='the initial learning rate')
+#     parser.add_argument('--resume', default='',
+#                         help='the path of resume training model')
+#     parser.add_argument('--device', default='0', help='assign device')
+#     parser.add_argument('--crop-size', type=int, default=224,
+#                         help='default 224')
+#     parser.add_argument('--task', type=str, default='counting',
+#                         help='task to run: counting | detection')
+#     parser.add_argument('--freeze-backbone', action='store_true',
+#                         help='freeze backbone at start of training')
+#     parser.add_argument('--freeze-counter', action='store_true',
+#                         help='freeze counting/regression head at start of training')
+#     parser.add_argument('--freeze-unet', action='store_true',
+#                         help='freeze U-Net weights at start of training')
+#     parser.add_argument('--unfreeze-epoch', type=int, default=-1,
+#                         help='epoch to unfreeze backbone (-1 to never)')
+#     parser.add_argument('--det-weight', type=float, default=1.0,
+#                         help='weight for detection loss when multi-task')
+#     parser.add_argument('--local_rank', type=int, default=0,
+#                         help='local rank for distributed training (set by torchrun)')
+#     parser.add_argument('--det-patience', type=int, default=10,
+#                         help='patience (in validation epochs) for detection AP early stopping')
+
+#     # default
+#     parser.add_argument('--weight-decay', type=float, default=1e-4,
+#                         help='the weight decay')
+#     parser.add_argument('--max-model-num', type=int, default=1,
+#                         help='max models num to save ')
+#     parser.add_argument('--max-epoch', type=int, default=500,
+#                         help='max training epoch')
+#     parser.add_argument('--val-epoch', type=int, default=1,
+#                         help='the num of steps to log training information')
+#     parser.add_argument('--val-start', type=int, default=0,
+#                         help='the epoch start to val')
+#     parser.add_argument('--save-all-best', type=bool, default=False,
+#                         help='whether to load opt state')
+#     parser.add_argument('--batch-size', type=int, default=1,
+#                         help='train batch size')
+#     parser.add_argument('--num-workers', type=int, default=8,
+#                         help='the num of training process')
+#     parser.add_argument('--downsample-ratio', type=int, default=8,
+#                         help='downsample ratio')
+#     parser.add_argument('--output-stride', type=int, default=None,
+#                         help='(alias) output stride / downsample ratio; overrides --downsample-ratio when provided')
+#     parser.add_argument('--det-pos-weight', type=float, default=1.0,
+#                         help='positive pixel weight for detection heatmap BCE (>=1.0 increases weight on positives)')
+#     parser.add_argument('--head-lr', type=float, default=None,
+#                         help='learning rate for detection head/adaptor (if set, creates optimizer param group)')
+#     parser.add_argument('--ap-dist-thresh', type=float, default=8.0,
+#                         help='distance threshold in pixels for AP matching (compute_ap)')
+#     parser.add_argument('--use-det-adaptor', action='store_true',
+#                         help='create a small 1x1 conv adaptor (det_adaptor) before det_head')
+#     parser.add_argument('--use-bce-logits', action='store_true',
+#                         help='use BCEWithLogitsLoss and have head output raw logits (no sigmoid)')
+#     parser.add_argument('--det-use-gn', action='store_true',
+#                         help='use GroupNorm in detection head and adaptor instead of BatchNorm')
+#     # Detection tuning flags
+#     parser.add_argument('--det-sigma', type=float, default=None,
+#                         help='gaussian sigma used to generate heatmaps in DetectionDataset (if provided)')
+#     parser.add_argument('--use-focal-heatmap', action='store_true',
+#                         help='use focal loss on heatmap (requires logits); alpha/gamma configurable')
+#     parser.add_argument('--focal-alpha', type=float, default=0.25,
+#                         help='focal loss alpha (class balance)')
+#     parser.add_argument('--focal-gamma', type=float, default=2.0,
+#                         help='focal loss gamma (focus on hard examples)')
+#     parser.add_argument('--det-neg-topk-ratio', type=float, default=None,
+#                         help='optional ratio of hardest negative pixels to include in heatmap loss (0-1); if None, include all negatives')
+#     parser.add_argument('--use-iou-size', action='store_true',
+#                         help='add IoU-based loss for size regression at positive locations')
+#     parser.add_argument('--iou-weight', type=float, default=0.5,
+#                         help='weight for IoU size loss relative to L1 size loss')
+#     # Eval-time NMS options
+#     parser.add_argument('--eval-nms', type=str, default=None,
+#                         help='optional NMS in evaluation/visualization: radius|soft')
+#     parser.add_argument('--eval-nms-radius', type=float, default=4.0,
+#                         help='radius (pixels) for radius NMS when eval-nms=radius')
+#     parser.add_argument('--eval-soft-nms-sigma', type=float, default=0.5,
+#                         help='sigma for Soft-NMS when eval-nms=soft')
+    
+#     # CenterNet-style detection head options (Option B)
+#     parser.add_argument('--head-conv', type=int, default=256,
+#                         help='detection head conv channels (CenterNet default: 256)')
+#     parser.add_argument('--use-deconv', action='store_true',
+#                         help='use ConvTranspose2d for upsampling (CenterNet style); else use bilinear+conv')
+#     parser.add_argument('--nms-kernel', type=int, default=3,
+#                         help='NMS kernel size for heatmap decode (default 3, CenterNet uses 3)')
+#     parser.add_argument('--use-fpn', action='store_true',
+#                         help='enable lightweight FPN neck (stride-4 fused feature with pooled context)')
+    
+#     # Phase 1: Keypoint-only mode for point annotations
+#     parser.add_argument('--keypoint-mode', action='store_true',
+#                         help='keypoint-only mode: use only heatmap + offset heads, skip size head (for point annotations)')
+#     parser.add_argument('--fixed-box-size', type=int, default=16,
+#                         help='fixed box size (pixels) for inference when using keypoint-mode (default 16)')
+                        
+#     # For DM-Count
+#     parser.add_argument('--wot', type=float, default=0.1, help='weight on OT loss')
+#     parser.add_argument('--wtv', type=float, default=0.01, help='weight on TV loss')
+#     parser.add_argument('--reg', type=float, default=10.0,
+#                         help='entropy regularization in sinkhorn')
+#     parser.add_argument('--num-of-iter-in-ot', type=int, default=100,
+#                         help='sinkhorn iterations')
+#     parser.add_argument('--norm-cood', type=int, default=0, help='whether to norm cood when computing distance')
+    
+#     # For RD Loss
+#     parser.add_argument('--wrd', type=float, default=0.1, help='weight of regional density loss')   
+
+#     args = parser.parse_args()
+#     return args
+
+
+# if __name__ == '__main__':
+#     args = parse_args()
+#     # if output_stride is provided, use it as downsample ratio
+#     if getattr(args, 'output_stride', None) is not None:
+#         args.downsample_ratio = args.output_stride
+#     torch.backends.cudnn.benchmark = True
+#     # when using torchrun/torch.distributed, LOCAL_RANK is set; otherwise fall back to args.device
+#     if 'LOCAL_RANK' in os.environ:
+#         args.local_rank = int(os.environ['LOCAL_RANK'])
+#     os.environ['CUDA_VISIBLE_DEVICES'] = args.device.strip()  # keep existing behavior for single-node
+
+#     trainer = RegTrainer(args)
+#     trainer.setup()
+#     trainer.train()
+
 from utils.dm_regression_trainer import RegTrainer
 import argparse
 import os
@@ -5,7 +144,7 @@ import torch
 args = None
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train ')
+    parser = argparse.ArgumentParser(description='Train - FIXED for drone dataset stability')
     parser.add_argument('--data-dir', default=r'',
                         help='training data directory')
     parser.add_argument('--save-dir', default='',
@@ -27,37 +166,53 @@ def parse_args():
                         help='freeze U-Net weights at start of training')
     parser.add_argument('--unfreeze-epoch', type=int, default=-1,
                         help='epoch to unfreeze backbone (-1 to never)')
-    parser.add_argument('--det-weight', type=float, default=1.0,
+    parser.add_argument('--det-weight', type=float, default=0.1,  # REDUCED from 1.0
                         help='weight for detection loss when multi-task')
     parser.add_argument('--local_rank', type=int, default=0,
                         help='local rank for distributed training (set by torchrun)')
     parser.add_argument('--det-patience', type=int, default=10,
                         help='patience (in validation epochs) for detection AP early stopping')
 
+    # False positive reduction arguments - TUNED for stability
+    parser.add_argument('--boundary-suppress', action='store_true', default=True,
+                        help='apply boundary suppression to reduce false positives at edges')
+    parser.add_argument('--suppress-margin', type=int, default=4,
+                        help='margin size for boundary suppression (default 4)')
+    parser.add_argument('--use-bg-suppress', action='store_true', default=True,
+                        help='use background suppression loss to penalize false positives')
+    parser.add_argument('--bg-suppress-weight', type=float, default=0.01,  # REDUCED from 0.5
+                        help='weight for background suppression loss')
+    parser.add_argument('--adaptive-threshold', action='store_true', default=True,
+                        help='use adaptive threshold based on image statistics')
+    parser.add_argument('--filter-boundary-dets', action='store_true', default=True,
+                        help='filter or reduce confidence for detections near image boundaries')
+    parser.add_argument('--count-aware-filtering', action='store_true', default=True,
+                        help='limit detections based on expected count')
+
     # default
     parser.add_argument('--weight-decay', type=float, default=1e-4,
                         help='the weight decay')
     parser.add_argument('--max-model-num', type=int, default=1,
                         help='max models num to save ')
-    parser.add_argument('--max-epoch', type=int, default=500,
+    parser.add_argument('--max-epoch', type=int, default=100,
                         help='max training epoch')
-    parser.add_argument('--val-epoch', type=int, default=1,
+    parser.add_argument('--val-epoch', type=int, default=2,
                         help='the num of steps to log training information')
-    parser.add_argument('--val-start', type=int, default=0,
+    parser.add_argument('--val-start', type=int, default=10,  # Start validation later
                         help='the epoch start to val')
     parser.add_argument('--save-all-best', type=bool, default=False,
                         help='whether to load opt state')
     parser.add_argument('--batch-size', type=int, default=1,
                         help='train batch size')
-    parser.add_argument('--num-workers', type=int, default=8,
+    parser.add_argument('--num-workers', type=int, default=4,
                         help='the num of training process')
-    parser.add_argument('--downsample-ratio', type=int, default=8,
+    parser.add_argument('--downsample-ratio', type=int, default=4,
                         help='downsample ratio')
     parser.add_argument('--output-stride', type=int, default=None,
                         help='(alias) output stride / downsample ratio; overrides --downsample-ratio when provided')
-    parser.add_argument('--det-pos-weight', type=float, default=1.0,
+    parser.add_argument('--det-pos-weight', type=float, default=7.0,
                         help='positive pixel weight for detection heatmap BCE (>=1.0 increases weight on positives)')
-    parser.add_argument('--head-lr', type=float, default=None,
+    parser.add_argument('--head-lr', type=float, default=0.0002,  # REDUCED from 0.002
                         help='learning rate for detection head/adaptor (if set, creates optimizer param group)')
     parser.add_argument('--ap-dist-thresh', type=float, default=8.0,
                         help='distance threshold in pixels for AP matching (compute_ap)')
@@ -67,30 +222,32 @@ def parse_args():
                         help='use BCEWithLogitsLoss and have head output raw logits (no sigmoid)')
     parser.add_argument('--det-use-gn', action='store_true',
                         help='use GroupNorm in detection head and adaptor instead of BatchNorm')
-    # Detection tuning flags
-    parser.add_argument('--det-sigma', type=float, default=None,
+    
+    # Detection tuning flags - TUNED for stability
+    parser.add_argument('--det-sigma', type=float, default=0.6,
                         help='gaussian sigma used to generate heatmaps in DetectionDataset (if provided)')
     parser.add_argument('--use-focal-heatmap', action='store_true',
                         help='use focal loss on heatmap (requires logits); alpha/gamma configurable')
-    parser.add_argument('--focal-alpha', type=float, default=0.25,
+    parser.add_argument('--focal-alpha', type=float, default=0.85,
                         help='focal loss alpha (class balance)')
     parser.add_argument('--focal-gamma', type=float, default=2.0,
                         help='focal loss gamma (focus on hard examples)')
-    parser.add_argument('--det-neg-topk-ratio', type=float, default=None,
-                        help='optional ratio of hardest negative pixels to include in heatmap loss (0-1); if None, include all negatives')
+    parser.add_argument('--det-neg-topk-ratio', type=float, default=0.2,  # INCREASED from 0.05
+                        help='ratio of hardest negative pixels to include in heatmap loss (0-1); focus on false positives')
     parser.add_argument('--use-iou-size', action='store_true',
                         help='add IoU-based loss for size regression at positive locations')
-    parser.add_argument('--iou-weight', type=float, default=0.5,
+    parser.add_argument('--iou-weight', type=float, default=0.3,
                         help='weight for IoU size loss relative to L1 size loss')
+    
     # Eval-time NMS options
-    parser.add_argument('--eval-nms', type=str, default=None,
+    parser.add_argument('--eval-nms', type=str, default='radius',
                         help='optional NMS in evaluation/visualization: radius|soft')
-    parser.add_argument('--eval-nms-radius', type=float, default=4.0,
+    parser.add_argument('--eval-nms-radius', type=float, default=3.0,
                         help='radius (pixels) for radius NMS when eval-nms=radius')
     parser.add_argument('--eval-soft-nms-sigma', type=float, default=0.5,
                         help='sigma for Soft-NMS when eval-nms=soft')
     
-    # CenterNet-style detection head options (Option B)
+    # CenterNet-style detection head options
     parser.add_argument('--head-conv', type=int, default=256,
                         help='detection head conv channels (CenterNet default: 256)')
     parser.add_argument('--use-deconv', action='store_true',
@@ -127,12 +284,21 @@ if __name__ == '__main__':
     # if output_stride is provided, use it as downsample ratio
     if getattr(args, 'output_stride', None) is not None:
         args.downsample_ratio = args.output_stride
+    
+    # Set CuDNN for reproducibility
     torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = True
+    
     # when using torchrun/torch.distributed, LOCAL_RANK is set; otherwise fall back to args.device
     if 'LOCAL_RANK' in os.environ:
         args.local_rank = int(os.environ['LOCAL_RANK'])
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.device.strip()  # keep existing behavior for single-node
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.device.strip()
 
+    # Set random seeds for reproducibility
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+    
     trainer = RegTrainer(args)
     trainer.setup()
     trainer.train()

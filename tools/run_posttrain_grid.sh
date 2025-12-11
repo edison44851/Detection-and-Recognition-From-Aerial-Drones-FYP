@@ -18,9 +18,9 @@ set -euo pipefail
 #     ./.tmp_posttrain/grid_1201-215341 \
 #     64 8
 
-CKPT=${1:-checkpoints/1205-155221_new_baseline/best_model.pth}
-DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_ROOT=${3:-./.tmp_posttrain/grid_1205-155221_new_baseline}
+CKPT=${1:-checkpoints/1209-231022/best_model.pth}
+DATA_DIR=${2:-data/DroneRGBT_converted}
+OUT_ROOT=${3:-./.tmp_posttrain/1209-231022_threshold_001}
 NUM=${4:-64}
 DOWNSAMPLE=${5:-4}
 

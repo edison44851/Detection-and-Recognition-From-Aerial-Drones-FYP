@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class SimpleFPNNeck(nn.Module):
     """Lightweight FPN-style neck built from a single high-res feature map.
 

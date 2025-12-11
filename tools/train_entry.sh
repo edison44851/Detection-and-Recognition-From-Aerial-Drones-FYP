@@ -25,9 +25,9 @@ NUM_WORKERS=4
 DDP_TIMEOUT=3600  # DDP watchdog timeout in seconds (default: 1800=30min, set to 3600=1hr)
 
 # --- Data & Paths ---
-DATA_DIR=".data/DroneRGBT_converted"
+DATA_DIR="data/DroneRGBT_converted"
 SAVE_DIR="./checkpoints"
-RESUME=".weights/drone_rgbt_best_494_781.pth"
+RESUME="weights/drone_rgbt_best_494_781.pth"
 
 # --- Task Selection & Freezing ---
 TASK="detection"
@@ -71,22 +71,22 @@ DET_WEIGHT=1.0
 DET_POS_WEIGHT=7.0
 USE_BCE_LOGITS=1
 DET_USE_GN=1
-DET_SIGMA=2.0
+DET_SIGMA=0.8
 HEAD_LR=0.002
 
 # --- Focal Loss (Detection) ---
 USE_FOCAL_HEATMAP=1
-FOCAL_ALPHA=0.25
+FOCAL_ALPHA=0.75
 FOCAL_GAMMA=1.5
 
 # --- Hard Negative Mining & Size Loss ---
-DET_NEG_TOPK_RATIO=0.05
+DET_NEG_TOPK_RATIO=0.1
 USE_IOU_SIZE=1
 IOU_WEIGHT=0.3
 
 # --- Inference-time NMS Options ---
 EVAL_NMS="radius"
-EVAL_NMS_RADIUS=4.0
+EVAL_NMS_RADIUS=2.0
 EVAL_SOFT_NMS_SIGMA=0.5
 
 # --- Counting Task Parameters (DM-Count) ---

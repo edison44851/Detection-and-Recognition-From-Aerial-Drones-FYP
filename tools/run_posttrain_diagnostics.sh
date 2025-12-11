@@ -6,9 +6,9 @@ set -euo pipefail
 # 2) tiled (SAHI-style)
 # 3) default visualization (moderate threshold + NMS)
 
-CKPT=${1:-checkpoints/1209-205427/best_model.pth}
-DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_DIR=${3:-./.tmp_posttrain/1209-205427_threshold_001}
+CKPT=${1:-/home/chunying4/FYP/22_ckpt.tar(AP: 0.5069)}
+DATA_DIR=${2:-data/DroneRGBT_converted}
+OUT_DIR=${3:-./.tmp_posttrain/1211-102411}
 NUM=${4:-64}
 DOWNSAMPLE=${5:-4}
 
@@ -22,9 +22,9 @@ USE_DECONV=1
 KEYPOINT_MODE=0
 FIXED_BOX_SIZE=16
 USE_FPN=1
-SCORE_THRESH_RAW=0.01
-SCORE_THRESH_TILE=0.01
-SCORE_THRESH_ORIG=0.01
+SCORE_THRESH_RAW=0.35
+SCORE_THRESH_TILE=0.35
+SCORE_THRESH_ORIG=0.35
 SOFT_NMS_SIGMA_RAW=
 SOFT_NMS_SIGMA_TILE=
 SOFT_NMS_SIGMA_ORIG=
