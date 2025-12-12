@@ -12,13 +12,29 @@ This repository is a final-year-project (FYP) fork of the Free-Lunch multi-modal
 - **Three inference modes** (RAW/TILES/ORIG) with automated grid search: Configure parameter sweeps per mode, automatic directory structure
 - **Metrics output**: AP (8px distance threshold), F1, per-prediction CSV, TP/FP histograms
 
-**✅ Teammate's Code Integration (2025-12-11)** - Critical stability fixes validated:
-- **Gradient clipping** (max_norm=0.5) for stable training
-- **NaN/Inf detection** with automatic batch skipping
-- **Downsample ratio fix**: Corrected from 8→4 (2× larger heatmaps, major performance impact)
-- **Background suppression tracking** for better monitoring
-- **7 hyperparameter alignments**: det_sigma=0.8, focal_alpha=0.75, det_neg_topk_ratio=0.1, eval_nms_radius=2.0, det_patience=10, max_epoch=100, val_epoch=2
-- **Results**: Precision 0.701, Recall 0.536, F1 0.608 (50.2% FP reduction vs baseline)
+**✅ Teammate's Code Integration (2025-12-11)** - Teammate modifications (summary):
+
+- **Boundary Suppression (center_head.py):**
+  - Added `_apply_boundary_suppression()` to reduce spurious edge/corner detections
+  - Reduced per-pixel confidence near image edges and corners
+  - Convolutional boundary filtering to suppress border noise
+
+- **Enhanced Loss Functions (dm_regression_trainer.py):**
+  - Added background-suppression loss term
+  - Improved negative mining to focus on hard false positives
+  - Enforced gradient clipping for stable training
+
+- **Adaptive Thresholding & Density Filtering (detection_eval.py):**
+  - Dynamic score threshold per-image based on image statistics
+  - Density-based filtering to reduce clustered false positives
+  - Better handling of background regions via adaptive rules
+
+- **Evaluation & Inference Improvements (dm_regression_trainer.py):**
+  - Filter boundary detections during inference
+  - Count-aware filtering to limit excessive detections in dense regions
+  - Adaptive score thresholding to improve precision/recall balance
+
+- **Notes:** These teammate changes target FP reduction and inference robustness (boundary filtering, adaptive thresholds, and loss improvements). See Phase 4 results below for empirical impact.
 
 **⚠️ RGBT-CC Dataset Adaptation (2025-12-10)** - Implementation complete, testing pending:
 - Multi-scale augmentation (0.5×–2.0× resize, flip, crop) for scale variation handling
@@ -249,14 +265,24 @@ All detection features are opt-in via CLI flags. Counting-only experiments remai
 
 Grid search results from checkpoint 1130-145629_shallow_centerhead (November 30, 2025):
 
+Train checkpoint (Phase 2): checkpoints/1205-155221_deeper_centerhead/best_model.pth
+Train checkpoint (Phase 3): checkpoints/1209-205427_keypoint_mode_fpn/best_model.pth
+Train checkpoint (Phase 4): checkpoints/1211-171944_teammate/best_model.pth
+
 | Phase | Configuration | Mode | Precision | Recall | F1 | TP | FP | FN | Notes |
 |-------|--------------|------|-----------|--------|-----|-----|-----|-----|-------|
 | **Phase 1** | Shallow CenterHead (no deconv, no FPN, no keypoint mode) | RAW st=0.15 | 0.0804 | 0.2921 | 0.1261 | 15885 | 181594 | 38506 | Baseline, no NMS |
 | Phase 1 | Shallow CenterHead | ORIG st=0.20 | 0.0777 | 0.2852 | 0.1221 | 15514 | 184245 | 38877 | With NMS r=4 |
 | Phase 1 | Shallow CenterHead | TILES st=0.25 ov=0.20 | 0.1686 | 0.1944 | 0.1806 | 10571 | 52110 | 43820 | Tiled inference |
-| **Phase 2** | + Deconv + Keypoint mode | TBD | TBD | TBD | TBD | TBD | TBD | TBD | Single-scale improvements |
-| **Phase 3** | + FPN multi-scale | TBD | TBD | TBD | TBD | TBD | TBD | TBD | Multi-scale feature fusion |
-| **Phase 4** | + Teammate hyperparameters | TBD | TBD | TBD | TBD | TBD | TBD | TBD | Stability + tuning |
+| **Phase 2** | Deeper CenterHead (+ deconv, no keypoint mode) | RAW st=0.15 | 0.5607 | 0.5923 | 0.5761 | 32218 | 25244 | 22173 | Raw predictions (best at st=0.15); AP≈0.4773 |
+| Phase 2 | Deeper CenterHead (+ deconv, no keypoint mode) | ORIG st=0.30 | 0.5693 | 0.5915 | 0.5802 | 32171 | 24339 | 22220 | Deconv added; no keypoint mode; AP≈0.4775 |
+| Phase 2 | Deeper CenterHead (+ deconv, no keypoint mode) | TILES st=0.30 ov=0.15 | 0.5693 | 0.5915 | 0.5802 | 32171 | 24339 | 22220 | Tiled inference; AP≈0.4775 |
+| **Phase 3** | Keypoint Mode + FPN | RAW st=0.10 | 0.5775 | 0.5362 | 0.5561 | 29163 | 21334 | 25228 | Keypoint-mode + FPN (raw best) AP≈0.4185 |
+| Phase 3 | Keypoint Mode + FPN | ORIG st=0.30 | 0.5790 | 0.5360 | 0.5566 | 29152 | 21198 | 25239 | Keypoint-mode + FPN (orig best) AP≈0.4186 |
+| Phase 3 | Keypoint Mode + FPN | TILES st=0.30 ov=0.15 | 0.5790 | 0.5360 | 0.5566 | 29152 | 21198 | 25239 | Keypoint-mode + FPN (tiles best) AP≈0.4186 |
+| **Phase 4** | Teammate modifications (boundary/adaptive/density) | RAW st=0.15 | 0.5542 | 0.6009 | 0.5766 | 32686 | 26294 | 21705 | Boundary suppression & adaptive thresholds; AP≈0.4498 |
+| Phase 4 | Teammate modifications (boundary/adaptive/density) | ORIG st=0.25 | 0.6639 | 0.5151 | 0.5801 | 28019 | 14184 | 26372 | Improved precision via boundary filtering; AP≈0.3967 |
+| Phase 4 | Teammate modifications (boundary/adaptive/density) | TILES st=0.25 ov=0.15 | 0.6639 | 0.5151 | 0.5801 | 28019 | 14184 | 26372 | Tiled inference with teammate filters; AP≈0.3967 |
 
 **Phase 1 Analysis (1130-145629_shallow_centerhead):**
 - Very low precision (0.08–0.17): Massive false positive rate across all modes
