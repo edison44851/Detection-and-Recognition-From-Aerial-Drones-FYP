@@ -65,11 +65,6 @@ This repository is a final-year-project (FYP) fork of the Free-Lunch multi-modal
 - DDP with `find_unused_parameters` handling for frozen components
 - Separate param-groups for discriminative learning rates (head vs backbone)
 
-- Diagnostics & visualization improvements:
-  - `Fine-tune/test_detection_vis.py` now supports a reproducible `--indices-file` to force identical image selections across multiple runs, writes `selected_indices.txt` when performing random selection, and deduplicates by dataset-provided image id to avoid repeated visualizations.
-  - `tools/run_posttrain_diagnostics.sh` (post-train diagnostics wrapper) has been updated to reuse the `raw/selected_indices.txt` file so the `raw`, `tiles`, and `orig` visualizations process the same images for fair comparison.
-  - The visualization tool produces per-prediction CSV (`scores.csv`) and TP/FP histograms (`scores.png`) for easy score-threshold analysis.
-
 Where to find details
 - Implementation notes, tests, quick-run logs and discussion are collected under the `.plan/` directory. Start with `.plan/extension_progress.md` for a short status and next actions.
 
@@ -145,11 +140,7 @@ bash tools/run_posttrain_grid.sh \
   1806 4
 ```
 
-This produces three diagnostic modes:
-- **RAW mode** (`raw/`): Raw predictions without NMS, all score thresholds swept for threshold analysis
-- **TILES mode** (`tiles/`): Tiled inference (SAHI-style) with multi-parameter optimization (tile size, overlap, NMS radius)
-- **ORIG mode** (`orig/`): Original full-image inference with NMS enabled, realistic post-processing
-- Per-mode outputs: Detection overlays, `scores.csv` (per-prediction scores), `scores.png` (TP/FP histograms), `report.txt` (aggregate metrics)
+Outputs: Three diagnostic modes (RAW/TILES/ORIG) with detection overlays, per-prediction CSVs, TP/FP histograms, and aggregate metrics. See "Inference Modes" section below for detailed mode descriptions.
 
 #### Inference Performance Enhancements (December 2025)
 
@@ -373,8 +364,7 @@ Note: `tools/train_entry.sh` accepts launcher options (`--nproc`, `--device`) be
 - Check `scores.csv` histograms to tune score threshold
 
 **3. Training instability / NaN loss**
-- Gradient clipping is automatic (max_norm=0.5)
-- NaN/Inf detection skips bad batches automatically
+- **See `Training Stability & Reproducibility`** for stability features (gradient clipping, NaN/Inf detection, background suppression).
 - Reduce `--head-lr` if gradients explode
 - Enable `--det-use-gn` for small-batch training
 
