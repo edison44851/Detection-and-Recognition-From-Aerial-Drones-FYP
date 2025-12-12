@@ -18,10 +18,29 @@ set -euo pipefail
 #     ./.tmp_posttrain/grid_1201-215341 \
 #     64 8
 
-CKPT=${1:-checkpoints/1205-155221_new_baseline/best_model.pth}
+
+# ------------------------------
+# Model architecture parameters (set per stage as needed)
+# These can be set at the top for each run or stage
+# Example: head_conv=256, use_deconv=1, use_fpn=0, keypoint_mode=0
+
+HEAD_CONV=256
+USE_DECONV=0
+USE_FPN=0
+KEYPOINT_MODE=0
+
+# Global min_score for all modes (set to lowest value you want to allow)
+MIN_SCORE=0.01
+
+# Performance parameters (apply to all modes)
+NUM_VIS=64
+BATCH_SIZE=8
+NUM_WORKERS=4
+
+CKPT=${1:-checkpoints/1130-145629_shallow_centerhead/best_model.pth}
 DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_ROOT=${3:-./.tmp_posttrain/grid_1205-155221_new_baseline}
-NUM=${4:-64}
+OUT_ROOT=${3:-./.tmp_posttrain/grid_1130-145629_shallow_centerhead}
+NUM=${4:-10000}
 DOWNSAMPLE=${5:-4}
 
 mkdir -p "$OUT_ROOT"
@@ -38,6 +57,8 @@ echo "  out:  $OUT_ROOT"
 # TYPE: scalar | bool (bool = store-true flag, included only when value==1)
 declare -A PARAM_FLAG PARAM_ALIAS PARAM_TYPE
 
+
+# --- Parameter registry: update to match test_detection_vis.py flags ---
 PARAM_FLAG[score_thresh]=--score-thresh
 PARAM_ALIAS[score_thresh]=st
 PARAM_TYPE[score_thresh]=scalar
@@ -66,10 +87,17 @@ PARAM_FLAG[tile_overlap]=--tile-overlap
 PARAM_ALIAS[tile_overlap]=ov
 PARAM_TYPE[tile_overlap]=scalar
 
-# Phase 1: Keypoint mode parameters
-PARAM_FLAG[keypoint_mode]=--keypoint-mode
-PARAM_ALIAS[keypoint_mode]=kp
-PARAM_TYPE[keypoint_mode]=bool
+PARAM_FLAG[indices_file]=--indices-file
+PARAM_ALIAS[indices_file]=idx
+PARAM_TYPE[indices_file]=scalar
+
+PARAM_FLAG[scores_csv]=--scores-csv
+PARAM_ALIAS[scores_csv]=csv
+PARAM_TYPE[scores_csv]=scalar
+
+PARAM_FLAG[scores_hist]=--scores-hist
+PARAM_ALIAS[scores_hist]=hist
+PARAM_TYPE[scores_hist]=scalar
 
 # ------------------------------
 # Mode-specific configuration
@@ -77,32 +105,29 @@ PARAM_TYPE[keypoint_mode]=bool
 # Define which parameters to sweep per mode and their values.
 # To sweep, list multiple values. For fixed, list a single value.
 
-# RAW mode
-RAW_PARAMS=(min_score score_thresh nms_radius soft_nms_sigma max_dets)
-RAW_values_min_score=(0.01 0.02 0.03)
-RAW_values_score_thresh=(0.02 0.03 0.05)
-RAW_values_nms_radius=(0 2 4)
-RAW_values_soft_nms_sigma=()
-RAW_values_max_dets=(500 1000)
+# RAW mode: sweep score_thresh, min_score is global
+RAW_PARAMS=(score_thresh max_dets)
+RAW_values_score_thresh=(0.01 0.05 0.10 0.15)
+RAW_values_max_dets=(1000)
 
-# TILES mode
-TILES_PARAMS=(min_score score_thresh nms_radius soft_nms_sigma max_dets tile_size tile_overlap)
-TILES_values_min_score=(0.01 0.02 0.03)
-TILES_values_score_thresh=(0.03 0.05)
-TILES_values_nms_radius=(2 4 6)
-TILES_values_soft_nms_sigma=(6 8 12)
-TILES_values_max_dets=(600)
+# TILES mode: sweep score_thresh, min_score is global
+TILES_PARAMS=(score_thresh nms_radius soft_nms_sigma max_dets tile_size tile_overlap)
+TILES_values_score_thresh=(0.20 0.25 0.30)
+TILES_values_nms_radius=(4)
+TILES_values_soft_nms_sigma=()
+TILES_values_max_dets=(150)
 TILES_values_tile_size=(512)
-TILES_values_tile_overlap=(0.25)
+TILES_values_tile_overlap=(0.15 0.20 0.25)
 
-# ORIG mode
-ORIG_PARAMS=(min_score score_thresh nms_radius soft_nms_sigma max_dets)
-ORIG_values_min_score=(0.01 0.02)
-ORIG_values_score_thresh=(0.05 0.08)
-ORIG_values_nms_radius=(2 4)
-ORIG_values_soft_nms_sigma=(6 8)
-ORIG_values_max_dets=(200 400)
+# ORIG mode: sweep score_thresh, min_score is global
+ORIG_PARAMS=(score_thresh nms_radius max_dets)
+ORIG_values_score_thresh=(0.20 0.25 0.30)
+ORIG_values_nms_radius=(4)
+ORIG_values_soft_nms_sigma=()
+ORIG_values_max_dets=(150)
 
+
+# No soft_nms_sigma in ORIG for now
 # ------------------------------
 # Helpers
 # ------------------------------
@@ -173,6 +198,10 @@ recurse_combos() {
       --out "$out_dir"
       --num "$NUM" --downsample-ratio "$DOWNSAMPLE"
       --ap-dist-thresh 8.0
+      --min-score "$MIN_SCORE"
+      --num-vis "$NUM_VIS"
+      --batch-size "$BATCH_SIZE"
+      --num-workers "$NUM_WORKERS"
     )
     # add extra fixed args first (including keypoint mode if enabled)
     if [[ -n "$extra_fixed_args" ]]; then
@@ -180,7 +209,18 @@ recurse_combos() {
       cmd+=( $extra_fixed_args )
     fi
     # Add head architecture flags (should match training config)
-    cmd+=( --head-conv 256 --use-deconv )
+    if [[ -n "$HEAD_CONV" ]]; then
+      cmd+=( --head-conv "$HEAD_CONV" )
+    fi
+    if [[ "$USE_DECONV" == "1" ]]; then
+      cmd+=( --use-deconv )
+    fi
+    if [[ "$USE_FPN" == "1" ]]; then
+      cmd+=( --use-fpn )
+    fi
+    if [[ "$KEYPOINT_MODE" == "1" ]]; then
+      cmd+=( --keypoint-mode )
+    fi
     # add accumulated sweep args
     if [[ -n "$accum_args" ]]; then
       # shellcheck disable=SC2206
@@ -251,8 +291,8 @@ BASE_INDICES_FILE=""
   mode="RAW"; mode_lc="RAW" # names for get_values use RAW_values_
   out_base="$OUT_ROOT/raw"
   mkdir -p "$out_base"
-  # fixed args (none beyond what's in RAW_PARAMS with single values)
-  fixed_args=""
+  # fixed args: disable NMS for raw predictions
+  fixed_args="--no-nms"
   recurse_combos "RAW" RAW_PARAMS 0 "" "" "$out_base" "$fixed_args" ""
 }
 

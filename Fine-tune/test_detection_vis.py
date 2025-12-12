@@ -17,14 +17,27 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import numpy as np
+from torch.utils.data import DataLoader
+
 import csv
 import matplotlib.pyplot as plt
 import cv2
+from utils.detection_eval import compute_ap
 
 from datasets.dm_detection import DetectionDataset
 from models.counting.swin_unet import Swin_BM_RGBT
 from models.detection.det_model import DetectionHeadWrapper
 from utils.detection_eval import heatmap_peaks
+
+
+def collate_fn(batch):
+    """Custom collate function to handle variable-length ground truth points."""
+    rgb = torch.stack([item['rgb'] for item in batch])
+    t = torch.stack([item['t'] for item in batch])
+    # Keep points as list (variable length)
+    points = [item.get('points', torch.zeros((0, 2))) for item in batch]
+    ids = [item.get('id', f'sample_{i}') for i, item in enumerate(batch)]
+    return {'rgb': rgb, 't': t, 'points': points, 'id': ids}
 
 
 def nms_radius(preds, radius):
@@ -139,33 +152,33 @@ def infer_and_visualize(args):
 
     ds = DetectionDataset(args.data_dir, split='test', output_stride=args.downsample_ratio)
     N = len(ds)
-    # choose indices: either from provided indices file or random unique sample
+    
+    # Use DataLoader for parallel loading and batching with custom collate function
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, 
+                       pin_memory=True, collate_fn=collate_fn)
+    
+    # Determine visualization indices
     if args.indices_file:
         with open(args.indices_file, 'r') as f:
-            sel = [int(x.strip()) for x in f.readlines() if x.strip()]
-        # clamp indices to dataset range
-        sel = [x for x in sel if 0 <= x < N]
-        print(f"Using {len(sel)} indices from {args.indices_file}")
-        write_selected = False
+            vis_indices = set([int(x.strip()) for x in f.readlines() if x.strip()])
+        vis_indices = {x for x in vis_indices if 0 <= x < N}
+        print(f"Using {len(vis_indices)} visualization indices from {args.indices_file}")
     else:
-        # select unique random indices up to dataset size
-        k = min(args.num, N)
+        # Select random indices for visualization only
+        k_vis = min(args.num_vis, N)
         random.seed(args.seed)
-        # use random.sample to ensure uniqueness
-        sel = random.sample(range(N), k)
-        # safety: ensure sel contains unique indices (preserve order)
-        seen = set()
-        sel = [x for x in sel if not (x in seen or seen.add(x))]
-        # log selected indices for reproducibility
+        vis_indices = set(random.sample(range(N), k_vis))
+        # Save visualization indices for reproducibility
         out_dir = Path(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
         sel_path = out_dir / 'selected_indices.txt'
         with open(sel_path, 'w') as sf:
-            sf.write('\n'.join([str(x) for x in sel]))
-        print(f"Selected {len(sel)} unique samples, indices written to {sel_path}")
-        write_selected = False
-    # Ensure we don't process the same image id multiple times (defensive)
-    processed_ids = set()
+            sf.write('\n'.join([str(x) for x in sorted(vis_indices)]))
+        print(f"Selected {len(vis_indices)} samples for visualization, indices written to {sel_path}")
+    
+    # Process limit (default: all)
+    process_limit = args.num if args.num < N else N
+    print(f"Processing {process_limit} images, visualizing {len(vis_indices)} images")
 
     # load model
     # Instantiate the backbone and attach a detection head that will use the
@@ -219,174 +232,175 @@ def infer_and_visualize(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     report_lines = []
     csv_rows = []
+    # For AP calculation using detection_eval
+    preds_per_image = []  # list of list of (x, y, score)
+    gts_per_image = []    # list of np.ndarray (N,2)
 
-    def run_on_patch(rgb_patch, t_patch, x0=0, y0=0):
-        rgb_vis = preprocess_image(rgb_patch)
-        t_vis = preprocess_image(t_patch)
-        rgb_b = rgb_patch.unsqueeze(0).to(device)
-        t_b = t_patch.unsqueeze(0).to(device)
+    processed_count = 0
+    for batch_idx, batch in enumerate(loader):
+        if processed_count >= process_limit:
+            break
+        
+        rgb_batch = batch['rgb'].to(device)  # [B, 3, H, W]
+        t_batch = batch['t'].to(device)      # [B, 3, H, W]
+        gt_pts_batch = batch.get('points', None)
+        ids_batch = batch.get('id', None)
+        
+        batch_size_actual = rgb_batch.shape[0]
+        
+        # Batch inference
         with torch.no_grad():
-            res = model(rgb_b, t_b)
+            res = model(rgb_batch, t_batch)
             if isinstance(res, tuple) and len(res) >= 2:
                 dets = res[1]
             else:
                 dets = (None, None, None)
-            heat_pred = dets[0]
-            offset_pred = dets[2]
+            heat_pred = dets[0]  # [B, 1, H_out, W_out]
+            offset_pred = dets[2]  # [B, 2, H_out, W_out] or None
+        
+        # Process each image in batch
+        for i in range(batch_size_actual):
+            idx = batch_idx * args.batch_size + i
+            if idx >= process_limit:
+                break
+            processed_count += 1
+            
+            # Get image ID
+            img_id = ids_batch[i] if ids_batch is not None else f"sample_{idx:04d}"
+            
+            # Extract predictions for this image
             preds_px = []
             if heat_pred is not None:
-                heat_np = heat_pred.detach().cpu().numpy()
-                off_np = offset_pred.detach().cpu().numpy() if offset_pred is not None else None
-                hm = heat_np[0, 0]
+                heat_np = heat_pred[i].detach().cpu().numpy()  # [1, H_out, W_out]
+                off_np = offset_pred[i].detach().cpu().numpy() if offset_pred is not None else None  # [2, H_out, W_out]
+                hm = heat_np[0]
                 if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
                     hm = 1.0 / (1.0 + np.exp(-hm))
-                # Apply NMS during peak extraction (use args or defaults)
-                use_nms = True
+                # Apply NMS during peak extraction (unless disabled)
+                use_nms = not args.no_nms
                 nms_kernel = getattr(args, 'nms_kernel', 3)
                 peaks = heatmap_peaks(hm, min_score=args.min_score, use_nms=use_nms, nms_kernel=nms_kernel)
                 for x_out, y_out, score in peaks:
-                    offx = float(off_np[0, 0, int(y_out), int(x_out)]) if off_np is not None else 0.0
-                    offy = float(off_np[0, 1, int(y_out), int(x_out)]) if off_np is not None else 0.0
-                    cx = (x_out + offx) * args.downsample_ratio + x0
-                    cy = (y_out + offy) * args.downsample_ratio + y0
+                    offx = float(off_np[0, int(y_out), int(x_out)]) if off_np is not None else 0.0
+                    offy = float(off_np[1, int(y_out), int(x_out)]) if off_np is not None else 0.0
+                    cx = (x_out + offx) * args.downsample_ratio
+                    cy = (y_out + offy) * args.downsample_ratio
                     preds_px.append((cx, cy, float(score)))
-        return rgb_vis, t_vis, preds_px
 
-    for idx in sel:
-        sample = ds[idx]
-        # prefer dataset-provided id if available
-        id0 = sample.get('id', None)
-        img_id = id0 if id0 is not None else f"sample_{idx:04d}"
-        # skip if we've already processed this dataset id
-        if img_id in processed_ids:
-            print(f"Skipping duplicate image id {img_id}")
-            continue
-        processed_ids.add(img_id)
-        rgb = sample['rgb']  # tensor [3,H,W]
-        t = sample['t']
-        # preserve original image for visualization
-        rgb_vis = preprocess_image(rgb)
-        t_vis = preprocess_image(t)
-
-        preds_px = []
-        rgb_vis = preprocess_image(rgb)
-        t_vis = preprocess_image(t)
-        if args.tile_size:
-            # sliding-window tiling
-            H, W = rgb.shape[1], rgb.shape[2]
-            ts = int(args.tile_size)
-            ov = float(args.tile_overlap or 0.0)
-            stride = max(1, int(ts * (1.0 - ov)))
-            for y0 in range(0, H, stride):
-                for x0 in range(0, W, stride):
-                    y1 = min(y0 + ts, H)
-                    x1 = min(x0 + ts, W)
-                    rgb_patch = rgb[:, y0:y1, x0:x1]
-                    t_patch = t[:, y0:y1, x0:x1]
-                    rv, tv, ppx = run_on_patch(rgb_patch, t_patch, x0=x0, y0=y0)
-                    preds_px.extend(ppx)
-        else:
-            # full image
-            rv, tv, ppx = run_on_patch(rgb, t, x0=0, y0=0)
-            preds_px.extend(ppx)
-
-        # get GT points (numpy array Nx2) in pixel coords
-        gt_pts = sample.get('points', None)
-        if gt_pts is None:
-            gt_pts = []
-        else:
-            if isinstance(gt_pts, torch.Tensor):
-                gt_pts = gt_pts.numpy()
-
-        # apply NMS/topK before matching
-        # optional score thresholding before NMS
-        if args.score_thresh is not None:
-            st = float(args.score_thresh)
-            preds_px = [p for p in preds_px if p[2] >= st]
-        # NMS options
-        if args.nms_radius:
-            preds_px = nms_radius(preds_px, float(args.nms_radius))
-        if args.soft_nms_sigma:
-            preds_px = soft_nms_gaussian(preds_px, float(args.soft_nms_sigma), score_thresh=args.score_thresh)
-        if args.max_dets:
-            preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:int(args.max_dets)]
-        # perform greedy matching between preds and GTs using distance threshold
-        dist_thresh = args.ap_dist_thresh
-        # sort preds by score descending
-        preds_sorted = sorted(preds_px, key=lambda x: x[2], reverse=True)
-        matched_pred_flags = [False] * len(preds_sorted)
-        gt_matched = [False] * (len(gt_pts) if len(gt_pts) > 0 else 0)
-        tp = 0
-        fp = 0
-        fn = 0
-        # for each pred, match to nearest unmatched GT
-        for i, (px, py, score) in enumerate(preds_sorted):
-            if len(gt_pts) == 0:
-                matched = False
-                matched_pred_flags[i] = False
-                fp += 1
-                continue
-            dists = np.sqrt((gt_pts[:, 0] - px) ** 2 + (gt_pts[:, 1] - py) ** 2)
-            unmatched_idx = [j for j, m in enumerate(gt_matched) if not m]
-            if len(unmatched_idx) == 0:
-                matched = False
-                matched_pred_flags[i] = False
-                fp += 1
-                continue
-            dists_un = dists[unmatched_idx]
-            minpos = int(np.argmin(dists_un))
-            idx = unmatched_idx[minpos]
-            if dists_un[minpos] <= dist_thresh:
-                matched = True
-                matched_pred_flags[i] = True
-                gt_matched[idx] = True
-                tp += 1
+            # get GT points (numpy array Nx2) in pixel coords
+            gt_pts = gt_pts_batch[i] if gt_pts_batch is not None else None
+            if gt_pts is None:
+                gt_pts = []
             else:
-                matched = False
-                matched_pred_flags[i] = False
-                fp += 1
+                if isinstance(gt_pts, torch.Tensor):
+                    gt_pts = gt_pts.cpu().numpy()
+                if gt_pts.ndim == 1 and len(gt_pts) == 0:
+                    gt_pts = []
 
-        fn = (len(gt_pts) - sum(gt_matched)) if len(gt_pts) > 0 else 0
+            # For AP calculation: store per-image preds and GTs
+            preds_per_image.append([(float(p[0]), float(p[1]), float(p[2])) for p in preds_px])
+            gts_per_image.append(np.array(gt_pts) if len(gt_pts) > 0 else np.zeros((0,2)))
 
-        # annotate preds_px with matched flags in original order (not sorted)
-        # build map from sorted preds to original preds
-        preds_with_flags = []
-        sorted_map = { (p[0], p[1], p[2]): i for i,p in enumerate(preds_sorted) }
-        for p in preds_px:
-            key = (p[0], p[1], p[2])
-            si = sorted_map.get(key, None)
-            if si is None:
-                preds_with_flags.append((p[0], p[1], p[2], None))
-            else:
-                preds_with_flags.append((p[0], p[1], p[2], bool(matched_pred_flags[si])))
+            # apply NMS/topK before matching
+            # optional score thresholding before NMS
+            if args.score_thresh is not None:
+                st = float(args.score_thresh)
+                preds_px = [p for p in preds_px if p[2] >= st]
+            # NMS options (unless disabled by --no-nms)
+            if not args.no_nms:
+                if args.nms_radius:
+                    preds_px = nms_radius(preds_px, float(args.nms_radius))
+                if args.soft_nms_sigma:
+                    preds_px = soft_nms_gaussian(preds_px, float(args.soft_nms_sigma), score_thresh=args.score_thresh)
+            if args.max_dets:
+                preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:int(args.max_dets)]
+            # perform greedy matching between preds and GTs using distance threshold
+            dist_thresh = args.ap_dist_thresh
+            # sort preds by score descending
+            preds_sorted = sorted(preds_px, key=lambda x: x[2], reverse=True)
+            matched_pred_flags = [False] * len(preds_sorted)
+            gt_matched = [False] * (len(gt_pts) if len(gt_pts) > 0 else 0)
+            tp = 0
+            fp = 0
+            fn = 0
+            # for each pred, match to nearest unmatched GT
+            for j, (px, py, score) in enumerate(preds_sorted):
+                if len(gt_pts) == 0:
+                    matched = False
+                    matched_pred_flags[j] = False
+                    fp += 1
+                    continue
+                dists = np.sqrt((gt_pts[:, 0] - px) ** 2 + (gt_pts[:, 1] - py) ** 2)
+                unmatched_idx = [k for k, m in enumerate(gt_matched) if not m]
+                if len(unmatched_idx) == 0:
+                    matched = False
+                    matched_pred_flags[j] = False
+                    fp += 1
+                    continue
+                dists_un = dists[unmatched_idx]
+                minpos = int(np.argmin(dists_un))
+                gt_idx = unmatched_idx[minpos]
+                if dists_un[minpos] <= dist_thresh:
+                    matched = True
+                    matched_pred_flags[j] = True
+                    gt_matched[gt_idx] = True
+                    tp += 1
+                else:
+                    matched = False
+                    matched_pred_flags[j] = False
+                    fp += 1
 
-        # create overlay image with both halves and markers
-        canvas = vis_on_image(rgb_vis, t_vis, preds_with_flags, args.downsample_ratio, None)
+            fn = (len(gt_pts) - sum(gt_matched)) if len(gt_pts) > 0 else 0
 
-        # draw GT points on canvas (blue X on RGB and thermal)
-        h_img, w_img = rgb_vis.shape[:2]
-        sep = 8
-        for g in gt_pts:
-            gx = int(round(float(g[0])))
-            gy = int(round(float(g[1])))
-            # draw X on RGB half
-            cv2.line(canvas, (gx - 4, gy - 4), (gx + 4, gy + 4), (255, 0, 0), 2)
-            cv2.line(canvas, (gx - 4, gy + 4), (gx + 4, gy - 4), (255, 0, 0), 2)
-            # draw on thermal half
-            cv2.line(canvas, (w_img + sep + gx - 4, gy - 4), (w_img + sep + gx + 4, gy + 4), (255, 0, 0), 2)
-            cv2.line(canvas, (w_img + sep + gx - 4, gy + 4), (w_img + sep + gx + 4, gy - 4), (255, 0, 0), 2)
+            # Only visualize selected indices
+            if idx in vis_indices:
+                # Preprocess images only for visualization
+                rgb_vis = preprocess_image(rgb_batch[i])
+                t_vis = preprocess_image(t_batch[i])
+                
+                # annotate preds_px with matched flags in original order (not sorted)
+                preds_with_flags = []
+                sorted_map = { (p[0], p[1], p[2]): j for j,p in enumerate(preds_sorted) }
+                for p in preds_px:
+                    key = (p[0], p[1], p[2])
+                    si = sorted_map.get(key, None)
+                    if si is None:
+                        preds_with_flags.append((p[0], p[1], p[2], None))
+                    else:
+                        preds_with_flags.append((p[0], p[1], p[2], bool(matched_pred_flags[si])))
 
-        # save using dataset id for clarity
-        save_path = out_dir / f"{img_id}.jpg"
-        cv2.imwrite(str(save_path), canvas)
-        print('Saved', save_path)
-        report_lines.append(f"{img_id}: TP={tp} FP={fp} FN={fn} #GT={len(gt_pts)} #Preds={len(preds_px)}")
+                # create overlay image with both halves and markers
+                canvas = vis_on_image(rgb_vis, t_vis, preds_with_flags, args.downsample_ratio, None)
 
-        # append per-prediction rows for CSV: image_id, cx, cy, score, matched
-        for p in preds_with_flags:
-            img_id = img_id
-            cx, cy, score, matched = p
-            csv_rows.append([img_id, float(cx), float(cy), float(score), '' if matched is None else ('TP' if matched else 'FP')])
+                # draw GT points on canvas (blue X on RGB and thermal)
+                h_img, w_img = rgb_vis.shape[:2]
+                sep = 8
+                for g in gt_pts:
+                    gx = int(round(float(g[0])))
+                    gy = int(round(float(g[1])))
+                    # draw X on RGB half
+                    cv2.line(canvas, (gx - 4, gy - 4), (gx + 4, gy + 4), (255, 0, 0), 2)
+                    cv2.line(canvas, (gx - 4, gy + 4), (gx + 4, gy - 4), (255, 0, 0), 2)
+                    # draw on thermal half
+                    cv2.line(canvas, (w_img + sep + gx - 4, gy - 4), (w_img + sep + gx + 4, gy + 4), (255, 0, 0), 2)
+                    cv2.line(canvas, (w_img + sep + gx - 4, gy + 4), (w_img + sep + gx + 4, gy - 4), (255, 0, 0), 2)
+
+                # save using dataset id for clarity
+                save_path = out_dir / f"{img_id}.jpg"
+                cv2.imwrite(str(save_path), canvas)
+                print(f'Saved visualization {save_path}')
+            
+            report_lines.append(f"{img_id}: TP={tp} FP={fp} FN={fn} #GT={len(gt_pts)} #Preds={len(preds_px)}")
+
+            # append per-prediction rows for CSV: image_id, cx, cy, score, matched
+            preds_with_flags_csv = []
+            sorted_map = { (p[0], p[1], p[2]): j for j,p in enumerate(preds_sorted) }
+            for p in preds_px:
+                key = (p[0], p[1], p[2])
+                si = sorted_map.get(key, None)
+                matched_val = None if si is None else bool(matched_pred_flags[si])
+                cx, cy, score = p
+                csv_rows.append([img_id, float(cx), float(cy), float(score), '' if matched_val is None else ('TP' if matched_val else 'FP')])
 
     # write report summary
     if len(report_lines) > 0:
@@ -402,6 +416,15 @@ def infer_and_visualize(args):
                     total_fp += int(part.split('=')[1])
                 if part.startswith('FN='):
                     total_fn += int(part.split('=')[1])
+
+        # F1 calculation
+        precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+        recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        # AP calculation using detection_eval.compute_ap
+        ap, ap_precisions, ap_recalls = compute_ap(preds_per_image, gts_per_image, dist_thresh=args.ap_dist_thresh)
+
         report_path = out_dir / 'report.txt'
         with open(report_path, 'w') as f:
             f.write('Per-sample TP/FP/FN summary:\n')
@@ -409,6 +432,7 @@ def infer_and_visualize(args):
                 f.write(line + '\n')
             f.write('\n')
             f.write(f'Total TP={total_tp} FP={total_fp} FN={total_fn}\n')
+            f.write(f'Precision={precision:.4f} Recall={recall:.4f} F1={f1:.4f} AP={ap:.4f}\n')
         print('Saved report to', report_path)
 
     # write CSV of per-prediction scores if requested
@@ -447,7 +471,14 @@ def parse_args():
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--ckpt', default='')
     parser.add_argument('--out', default='visuals_detection')
-    parser.add_argument('--num', type=int, default=8)
+    parser.add_argument('--num', type=int, default=10000,
+                        help='number of images to process for inference (default: all)')
+    parser.add_argument('--num-vis', type=int, default=8,
+                        help='number of images to visualize and save')
+    parser.add_argument('--batch-size', type=int, default=8,
+                        help='batch size for inference (default: 8)')
+    parser.add_argument('--num-workers', type=int, default=4,
+                        help='number of workers for data loading (default: 4)')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--downsample-ratio', type=int, default=8)
     parser.add_argument('--min-score', type=float, default=0.01)
@@ -459,6 +490,8 @@ def parse_args():
                         help='radius (pixels) for simple radius-NMS to suppress nearby peaks')
     parser.add_argument('--nms-kernel', type=int, default=3,
                         help='NMS kernel size for max-pooling NMS during heatmap peak extraction (CenterNet-style)')
+    parser.add_argument('--no-nms', action='store_true',
+                        help='disable all NMS operations (peak extraction, radius-NMS, soft-NMS)')
     parser.add_argument('--soft-nms-sigma', type=float, default=None,
                         help='Gaussian soft-NMS sigma (pixels) for score decay; used after radius-NMS if provided')
     parser.add_argument('--score-thresh', type=float, default=None,
