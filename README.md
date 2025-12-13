@@ -126,7 +126,7 @@ tools/train_entry.sh \
   --batch-size 4 --max-epoch 100 -- \
   --task detection --keypoint-mode \
   --aug-scale-min 0.5 --aug-scale-max 2.0 \
-  --aug-flip 0.5 --thermal-clahe 1 \
+  --aug-flip 1 --thermal-clahe 1 \
   --freeze-backbone --freeze-unet --freeze-counter \
   --resume .weights/drone_rgbt_best_494_781.pth
 ```
@@ -246,7 +246,7 @@ The inference script has been optimized for speed and flexibility:
 
 ### Data Augmentation (RGBT-CC)
 - **Multi-scale resize** (`--aug-scale-min 0.5`, `--aug-scale-max 2.0`): Random resize augmentation
-- **Horizontal flip** (`--aug-flip 0.5`): Synchronized RGB+Thermal flipping
+- **Horizontal flip** (`--aug-flip 1`): Synchronized RGB+Thermal flipping
 - **Random crop** (`--aug-crop 224`): Localized detection simulation
 - **Thermal preprocessing** (`--thermal-clahe 1`): CLAHE contrast enhancement for thermal images
 
@@ -267,7 +267,7 @@ Grid search results from checkpoint 1130-145629_shallow_centerhead (November 30,
 
 Train checkpoint (Phase 2): checkpoints/1205-155221_deeper_centerhead/best_model.pth
 Train checkpoint (Phase 3): checkpoints/1209-205427_keypoint_mode_fpn/best_model.pth
-Train checkpoint (Phase 4): checkpoints/1211-171944_teammate/best_model.pth
+Train checkpoint (Phase 4): checkpoints/1213-090950_teammate2/best_model.pth
 
 | Phase | Configuration | Mode | Precision | Recall | F1 | TP | FP | FN | Notes |
 |-------|--------------|------|-----------|--------|-----|-----|-----|-----|-------|
@@ -280,9 +280,9 @@ Train checkpoint (Phase 4): checkpoints/1211-171944_teammate/best_model.pth
 | **Phase 3** | Keypoint Mode + FPN | RAW st=0.10 | 0.5775 | 0.5362 | 0.5561 | 29163 | 21334 | 25228 | Keypoint-mode + FPN (raw best) AP≈0.4185 |
 | Phase 3 | Keypoint Mode + FPN | ORIG st=0.30 | 0.5790 | 0.5360 | 0.5566 | 29152 | 21198 | 25239 | Keypoint-mode + FPN (orig best) AP≈0.4186 |
 | Phase 3 | Keypoint Mode + FPN | TILES st=0.30 ov=0.15 | 0.5790 | 0.5360 | 0.5566 | 29152 | 21198 | 25239 | Keypoint-mode + FPN (tiles best) AP≈0.4186 |
-| **Phase 4** | Teammate modifications (boundary/adaptive/density) | RAW st=0.15 | 0.5542 | 0.6009 | 0.5766 | 32686 | 26294 | 21705 | Boundary suppression & adaptive thresholds; AP≈0.4498 |
-| Phase 4 | Teammate modifications (boundary/adaptive/density) | ORIG st=0.25 | 0.6639 | 0.5151 | 0.5801 | 28019 | 14184 | 26372 | Improved precision via boundary filtering; AP≈0.3967 |
-| Phase 4 | Teammate modifications (boundary/adaptive/density) | TILES st=0.25 ov=0.15 | 0.6639 | 0.5151 | 0.5801 | 28019 | 14184 | 26372 | Tiled inference with teammate filters; AP≈0.3967 |
+| **Phase 4** | Teammate modifications (boundary/adaptive/density) | RAW st=0.15 | 0.4337 | 0.6581 | 0.5228 | 35794 | 46744 | 18597 | Teammate2 (retrain) — raw predictions; AP=0.4575 |
+| Phase 4 | Teammate modifications (boundary/adaptive/density) | ORIG st=0.30 | 0.5505 | 0.5971 | 0.5728 | 32475 | 26522 | 21916 | Teammate2 (retrain) — orig inference; AP=0.4314 |
+| Phase 4 | Teammate modifications (boundary/adaptive/density) | TILES st=0.30 ov=0.15 | 0.5505 | 0.5971 | 0.5728 | 32475 | 26522 | 21916 | Teammate2 (retrain) — tiled inference; AP=0.4314 |
 
 **Phase 1 Analysis (1130-145629_shallow_centerhead):**
 - Very low precision (0.08–0.17): Massive false positive rate across all modes
@@ -346,7 +346,7 @@ Train checkpoint (Phase 4): checkpoints/1211-171944_teammate/best_model.pth
 ### Data Augmentation (RGBT-CC)
 - `--aug-scale-min`: Minimum resize scale (default: 1.0)
 - `--aug-scale-max`: Maximum resize scale (default: 1.0)
-- `--aug-flip`: Horizontal flip probability (default: 0.0)
+- `--aug-flip`: Horizontal flip augmentation (default: 1)
 - `--aug-crop`: Random crop size (0 = disabled)
 - `--thermal-clahe`: Enable CLAHE thermal preprocessing
 
@@ -368,6 +368,17 @@ Note: `tools/train_entry.sh` accepts launcher options (`--nproc`, `--device`) be
 - Extreme scale variation (5×5 to 100×100 pixels)
 - Lower thermal quality (requires CLAHE preprocessing)
 - Use augmentation flags for better generalization
+
+#### RGBT-CC Training Results (Teammate)
+RGBT-CC training results (full test set) from teammate's run:
+
+| Configuration | Mode | Precision | Recall | F1 | TP | FP | FN | AP |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| orig_st_0.20_r_4_k_150 | ORIG | 0.7215 | 0.3297 | 0.4526 | 19553 | 7546 | 39748 | 0.3083 |
+| raw_st_0.15_k_1000 | RAW | 0.6623 | 0.3519 | 0.4596 | 20867 | 10640 | 38434 | 0.3094 |
+| tiles_st_0.20_r_4_k_150_ts_512_ov_0.15 | TILES | 0.7215 | 0.3297 | 0.4526 | 19553 | 7546 | 39748 | 0.3083 |
+
+Notes: RAW runs used `--no-nms`; ORIG/TILES used NMS radius 4 and `max_dets=150`. AP computed at 8px distance threshold.
 
 ### Dataset Preparation
 1. Point annotations stored as `.npy` files (N×2 array of x,y coordinates)
