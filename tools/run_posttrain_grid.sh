@@ -37,9 +37,9 @@ NUM_VIS=64
 BATCH_SIZE=8
 NUM_WORKERS=4
 
-CKPT=${1:-checkpoints/1211-171944_teammate/best_model.pth}
+CKPT=${1:-checkpoints/1213-090950/best_model.pth}
 DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_ROOT=${3:-./.tmp_posttrain/grid_1211-171944_teammate}
+OUT_ROOT=${3:-./.tmp_posttrain/grid_1213-090950_teammate2}
 NUM=${4:-10000}
 DOWNSAMPLE=${5:-4}
 
