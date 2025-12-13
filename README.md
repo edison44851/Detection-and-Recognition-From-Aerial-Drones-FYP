@@ -369,6 +369,17 @@ Note: `tools/train_entry.sh` accepts launcher options (`--nproc`, `--device`) be
 - Lower thermal quality (requires CLAHE preprocessing)
 - Use augmentation flags for better generalization
 
+#### RGBT-CC Training Results (Teammate)
+RGBT-CC training results (full test set) from teammate's run:
+
+| Configuration | Mode | Precision | Recall | F1 | TP | FP | FN | AP |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| orig_st_0.20_r_4_k_150 | ORIG | 0.7215 | 0.3297 | 0.4526 | 19553 | 7546 | 39748 | 0.3083 |
+| raw_st_0.15_k_1000 | RAW | 0.6623 | 0.3519 | 0.4596 | 20867 | 10640 | 38434 | 0.3094 |
+| tiles_st_0.20_r_4_k_150_ts_512_ov_0.15 | TILES | 0.7215 | 0.3297 | 0.4526 | 19553 | 7546 | 39748 | 0.3083 |
+
+Notes: RAW runs used `--no-nms`; ORIG/TILES used NMS radius 4 and `max_dets=150`. AP computed at 8px distance threshold.
+
 ### Dataset Preparation
 1. Point annotations stored as `.npy` files (N×2 array of x,y coordinates)
 2. RGB and thermal images in separate directories
