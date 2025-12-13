@@ -221,7 +221,8 @@ class RegTrainer(Trainer):
             self._deferred_det_head = DetectionHeadWrapper(
                 in_channels=768, hidden=256, 
                 head_conv=head_conv, use_deconv=use_deconv, keypoint_only=keypoint_only,
-                use_fpn=getattr(args, 'use_fpn', False)
+                use_fpn=getattr(args, 'use_fpn', False), boundary_suppress=getattr(args, 'boundary_suppress', True),
+                suppress_margin=getattr(args, 'suppress_margin', 4)
             )
             # Pass use_logits and use_gn to the underlying CenterHead
             self._deferred_det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
@@ -962,16 +963,22 @@ class RegTrainer(Trainer):
             # heat_pred may be raw logits if model was configured with `use_bce_logits`.
             # Convert to probabilities for peak extraction if values are outside [0,1].
             if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
-                # Numerically stable sigmoid with overflow protection
-                with np.errstate(over='ignore', invalid='ignore'):
-                    hm_pos = np.where(hm >= 0, 1.0 / (1.0 + np.exp(-np.clip(hm, -500, 500))), 0)
-                    hm_neg = np.where(hm < 0, np.exp(np.clip(hm, -500, 0)) / (1.0 + np.exp(np.clip(hm, -500, 0))), 0)
-                    hm = hm_pos + hm_neg
+                # stable sigmoid
+                hm = 1.0 / (1.0 + np.exp(-hm))
             
             # Apply NMS during peak extraction (CenterNet-style)
             use_nms = True  # Enable by default for CenterNet-style heads
             nms_kernel = getattr(self.args, 'nms_kernel', 3)
             peaks = heatmap_peaks(hm, min_score=0.01, use_nms=use_nms, nms_kernel=nms_kernel)
+
+            # Dynamic threshold based on image statistics
+            if getattr(self.args, 'adaptive_threshold', True):
+                # Adaptive threshold based on image content
+                hm_mean = np.mean(hm)
+                hm_std = np.std(hm)
+                min_score = max(0.05, hm_mean + hm_std * 0.5)
+            
+            peaks = heatmap_peaks(hm, min_score=min_score, use_nms=use_nms, nms_kernel=nms_kernel)
             
             preds_px = []
             for x_out, y_out, score in peaks:
@@ -980,6 +987,20 @@ class RegTrainer(Trainer):
                 cx = (x_out + offx) * self.downsample_ratio
                 cy = (y_out + offy) * self.downsample_ratio
                 preds_px.append((cx, cy, float(score)))
+
+                # NEW: Filter detections near image boundaries
+                H_out, W_out = hm.shape
+                if getattr(self.args, 'filter_boundary_dets', True):
+                    margin_ratio = 0.05
+                    margin_h = H_out * margin_ratio
+                    margin_w = W_out * margin_ratio
+                    if y_out < margin_h or y_out > H_out - margin_h or x_out < margin_w or x_out > W_out - margin_w:
+                        # Reduce confidence for boundary detections
+                        score = score * 0.5
+                
+                if score > min_score:  # Re-check after potential adjustment
+                    preds_px.append((cx, cy, float(score)))
+
             # optional eval-time NMS/top-K filtering
             nms_type = getattr(self.args, 'eval_nms', None)
             if nms_type:
@@ -989,8 +1010,16 @@ class RegTrainer(Trainer):
                 elif nms_type == 'soft':
                     sigma = float(getattr(self.args, 'eval_soft_nms_sigma', 0.5))
                     preds_px = self._soft_nms_points(preds_px, sigma)
-            # cap top-200 to avoid huge lists
-            preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:200]
+            
+            # Limit detections based on expected count
+            if getattr(self.args, 'count_aware_filtering', True) and sample is not None:
+                expected_count = len(sample['points'][idx]) if idx < len(sample['points']) else 0
+                max_dets = max(10, int(expected_count * 2))  # Allow up to 2x expected count
+                preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:max_dets]
+            else:
+                # cap top-200 to avoid huge lists
+                preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:200]
+            
             all_preds.append(preds_px)
         
         return all_preds

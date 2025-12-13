@@ -9,6 +9,6 @@ __pycache__
 .pytest_cache
 .tmp_posttrain
 checkpoints
-checkpoints_rgbt_cc
+checkpoints_cc
 ckpt_verify
 teammates
