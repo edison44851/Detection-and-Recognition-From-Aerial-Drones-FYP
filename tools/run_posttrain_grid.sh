@@ -25,9 +25,9 @@ set -euo pipefail
 # Example: head_conv=256, use_deconv=1, use_fpn=0, keypoint_mode=0
 
 HEAD_CONV=256
-USE_DECONV=0
-USE_FPN=0
-KEYPOINT_MODE=0
+USE_DECONV=1
+USE_FPN=1
+KEYPOINT_MODE=1
 
 # Global min_score for all modes (set to lowest value you want to allow)
 MIN_SCORE=0.01
@@ -37,9 +37,9 @@ NUM_VIS=64
 BATCH_SIZE=8
 NUM_WORKERS=4
 
-CKPT=${1:-checkpoints/1130-145629_shallow_centerhead/best_model.pth}
+CKPT=${1:-checkpoints/1211-171944_teammate/best_model.pth}
 DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_ROOT=${3:-./.tmp_posttrain/grid_1130-145629_shallow_centerhead}
+OUT_ROOT=${3:-./.tmp_posttrain/grid_1211-171944_teammate}
 NUM=${4:-10000}
 DOWNSAMPLE=${5:-4}
 
