@@ -2,7 +2,6 @@ from utils.dm_regression_trainer import RegTrainer
 import argparse
 import os
 import torch
-args = None
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train - FIXED for drone dataset stability')

@@ -1,0 +1,24 @@
+"""Configuration module for training and experimental setup."""
+
+from .constants import (
+    GRADIENT_CLIP_MAX_NORM,
+    HEATMAP_BIAS_INIT,
+    DEFAULT_HEAD_CONV_CHANNELS,
+    DEFAULT_HEATMAP_SIGMA,
+    DEFAULT_FOCAL_ALPHA,
+    DEFAULT_FOCAL_GAMMA,
+    DEFAULT_AP_DISTANCE_THRESHOLD,
+    DEFAULT_EVAL_NMS_RADIUS,
+    # Add other commonly used constants as needed
+)
+
+__all__ = [
+    'GRADIENT_CLIP_MAX_NORM',
+    'HEATMAP_BIAS_INIT',
+    'DEFAULT_HEAD_CONV_CHANNELS',
+    'DEFAULT_HEATMAP_SIGMA',
+    'DEFAULT_FOCAL_ALPHA',
+    'DEFAULT_FOCAL_GAMMA',
+    'DEFAULT_AP_DISTANCE_THRESHOLD',
+    'DEFAULT_EVAL_NMS_RADIUS',
+]

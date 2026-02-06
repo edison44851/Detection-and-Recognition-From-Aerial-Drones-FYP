@@ -6,6 +6,7 @@ from torchvision import transforms
 import random
 import numpy as np
 import cv2
+import logging
 
 
 def random_crop(im_h, im_w, crop_h, crop_w):
@@ -35,7 +36,7 @@ class Crowd(data.Dataset):
     def __init__(self, root_path, crop_size=256,
                  downsample_ratio=4,
                  method='train'):
-        print("init_Crowd dataset")
+        logging.info("Initializing Crowd dataset from %s", root_path)
         self.root_path = root_path
         self.gt_list = sorted(glob(os.path.join(self.root_path, '*.npy')))
         if method not in ['train', 'val', 'test']:

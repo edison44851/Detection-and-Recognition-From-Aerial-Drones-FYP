@@ -3,9 +3,6 @@ import argparse
 import os
 import torch
 
-args = None
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description='Train ')
     parser.add_argument('--data-dir', default=r"", help='training data directory')

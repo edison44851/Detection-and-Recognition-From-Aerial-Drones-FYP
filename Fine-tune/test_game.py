@@ -2,6 +2,7 @@ import torch
 import os
 import argparse
 import numpy as np
+import logging
 from datasets.crowd import Crowd
 from models.counting.swin_unet import Swin_BM_RGBT
 from utils.evaluation import eval_game, eval_relative
@@ -19,11 +20,13 @@ def count_parameters(model):
         if not parameter.requires_grad: continue
         params = parameter.numel()
         total_params += params
-    print(f"Total Trainable Params: {total_params}")
+    logging.info(f"Total Trainable Params: {total_params}")
     return total_params
 
 
 if __name__ == '__main__':
+    # Configure logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     datasets = Crowd(os.path.join(args.data_dir, 'test'), method='test')
     dataloader = torch.utils.data.DataLoader(datasets, 1, shuffle=False, num_workers=8, pin_memory=True)
@@ -32,7 +35,7 @@ if __name__ == '__main__':
     device = torch.device('cuda')
 
     model = Swin_BM_RGBT(pre_train=False)
-    print('111111111111111111111111111111111111: {}'.format(count_parameters(model)))
+    logging.info('Model trainable parameters: {}'.format(count_parameters(model)))
     model.to(device)
     model_path = args.save_dir
     checkpoint = torch.load(model_path, device)
@@ -44,19 +47,19 @@ if __name__ == '__main__':
         if any(k.startswith(prefix) for prefix in counting_keys)
     }
     
-    print(f'\nCheckpoint keys: {len(checkpoint)} total')
-    print(f'Filtered counting keys: {len(filtered_checkpoint)} loaded')
-    print(f'Detection keys skipped: {len(checkpoint) - len(filtered_checkpoint)}')
+    logging.info(f'Checkpoint keys: {len(checkpoint)} total')
+    logging.info(f'Filtered counting keys: {len(filtered_checkpoint)} loaded')
+    logging.info(f'Detection keys skipped: {len(checkpoint) - len(filtered_checkpoint)}')
     
     missing, unexpected = model.load_state_dict(filtered_checkpoint, strict=False)
     if missing:
-        print(f'\nMissing keys (not in checkpoint): {len(missing)}')
+        logging.info(f'Missing keys (not in checkpoint): {len(missing)}')
     if unexpected:
-        print(f'Unexpected keys (filtered out): {len(unexpected)}')
+        logging.info(f'Unexpected keys (filtered out): {len(unexpected)}')
     
     model.eval()
 
-    print('testing...')
+    logging.info('Starting testing...')
     game = [0, 0, 0, 0]
     mse = [0, 0, 0, 0]
     total_relative_error = 0
@@ -85,8 +88,7 @@ if __name__ == '__main__':
             else:
                 outputs = res
             epoch_minus.append(torch.sum(outputs).item() - torch.sum(target).item())
-            print(i, torch.sum(target).item(), torch.sum(outputs).item(),
-                  torch.sum(outputs).item() - torch.sum(target).item())
+            logging.debug(f'{i}: GT={torch.sum(target).item():.2f}, Pred={torch.sum(outputs).item():.2f}, Diff={torch.sum(outputs).item() - torch.sum(target).item():.2f}')
 
             for L in range(4):
                 abs_error, square_error = eval_game(outputs, target, L)
@@ -104,10 +106,10 @@ if __name__ == '__main__':
               'RMSE {mse:.2f} Re {relative:.4f}, '. \
         format(N, game0=game[0], game1=game[1], game2=game[2], game3=game[3], mse=mse[0], relative=total_relative_error)
 
-    print(log_str)
+    logging.info(log_str)
 
     epoch_minus = np.array(epoch_minus)
     mse = np.sqrt(np.mean(np.square(epoch_minus)))
     mae = np.mean(np.abs(epoch_minus))
     log_str = 'Final Test: GAME0 {}, RMSE {}'.format(mae, mse)
-    print(log_str)
+    logging.info(log_str)
