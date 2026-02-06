@@ -89,7 +89,6 @@ python3 Fine-tune/test_detection_vis.py \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  --fixed-box-size "$FIXED_BOX_SIZE" \
   ${SCORE_THRESH_ORIG:+--score-thresh "$SCORE_THRESH_ORIG"} \
   ${SOFT_NMS_SIGMA_ORIG:+--soft-nms-sigma "$SOFT_NMS_SIGMA_ORIG"} \
   --indices-file "$INDICES_FILE" \

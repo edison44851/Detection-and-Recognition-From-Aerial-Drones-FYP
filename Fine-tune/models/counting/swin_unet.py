@@ -16,8 +16,9 @@ import os
 from models.distillation.unet_cross_att import U_Net
 import logging
 
-net_ppca_path = r""
-bm_path = r""
+# Default paths for pretrained weights (can be overridden via __init__ parameters)
+_DEFAULT_NET_PPCA_PATH = r""
+_DEFAULT_BM_PATH = r""
 
 
 def drop_path_f(x, drop_prob: float = 0., training: bool = False):
@@ -685,7 +686,7 @@ def swin_large_patch4_window12_384_in22k(num_classes: int = 21841, **kwargs):
 
 
 class Swin_BM_RGBT(nn.Module):
-    def __init__(self, pre_train=True):
+    def __init__(self, pre_train=True, net_ppca_path=None, bm_path=None):
         super().__init__()
         self.unet = U_Net()
         self.backbone = swin_tiny_patch4_window7_224()
@@ -707,6 +708,9 @@ class Swin_BM_RGBT(nn.Module):
             # Attempt to load pretrained weights if paths are configured and files exist.
             # This is permissive: if paths are empty or files missing the model will continue
             # with randomly initialized weights and a clear log message will be emitted.
+            # Use provided paths or fall back to defaults
+            net_ppca_path = net_ppca_path or _DEFAULT_NET_PPCA_PATH
+            bm_path = bm_path or _DEFAULT_BM_PATH
             try:
                 if net_ppca_path and os.path.exists(net_ppca_path):
                     logging.info("Backbone Init: loading %s", net_ppca_path)

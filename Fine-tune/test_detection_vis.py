@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader
+import logging
 
 import csv
 import matplotlib.pyplot as plt
@@ -162,7 +163,7 @@ def infer_and_visualize(args):
         with open(args.indices_file, 'r') as f:
             vis_indices = set([int(x.strip()) for x in f.readlines() if x.strip()])
         vis_indices = {x for x in vis_indices if 0 <= x < N}
-        print(f"Using {len(vis_indices)} visualization indices from {args.indices_file}")
+        logging.info(f"Using {len(vis_indices)} visualization indices from {args.indices_file}")
     else:
         # Select random indices for visualization only
         k_vis = min(args.num_vis, N)
@@ -174,11 +175,11 @@ def infer_and_visualize(args):
         sel_path = out_dir / 'selected_indices.txt'
         with open(sel_path, 'w') as sf:
             sf.write('\n'.join([str(x) for x in sorted(vis_indices)]))
-        print(f"Selected {len(vis_indices)} samples for visualization, indices written to {sel_path}")
+        logging.info(f"Selected {len(vis_indices)} samples for visualization, indices written to {sel_path}")
     
     # Process limit (default: all)
     process_limit = args.num if args.num < N else N
-    print(f"Processing {process_limit} images, visualizing {len(vis_indices)} images")
+    logging.info(f"Processing {process_limit} images, visualizing {len(vis_indices)} images")
 
     # load model
     # Instantiate the backbone and attach a detection head that will use the
@@ -388,7 +389,7 @@ def infer_and_visualize(args):
                 # save using dataset id for clarity
                 save_path = out_dir / f"{img_id}.jpg"
                 cv2.imwrite(str(save_path), canvas)
-                print(f'Saved visualization {save_path}')
+                logging.debug(f'Saved visualization {save_path}')
             
             report_lines.append(f"{img_id}: TP={tp} FP={fp} FN={fn} #GT={len(gt_pts)} #Preds={len(preds_px)}")
 
@@ -518,5 +519,8 @@ def parse_args():
 
 
 if __name__ == '__main__':
+    # Configure logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
     args = parse_args()
     infer_and_visualize(args)
