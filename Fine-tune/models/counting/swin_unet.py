@@ -760,14 +760,13 @@ class Swin_BM_RGBT(nn.Module):
         features = r + t + b
         density = torch.abs(self.reg_layer(features / 3))
 
-        # If a detection head has been attached to this module, use the UNet-fused
-        # backbone output `b` (which contains RGB-T fusion) as the input to the
-        # detection adaptor + head. This allows loading original Swin_BM_RGBT
-        # weights (including U-Net fusion) and freezing them while training only
-        # the adaptor or head.
+        # If a detection head has been attached to this module, use the full
+        # multi-scale features (r + t + b) as the input to the detection adaptor
+        # + head. This aligns detection with the same fused features used for
+        # counting and tests multi-scale context for Phase 6.3.
         if getattr(self, 'det_head', None) is not None:
-            # adapted features come from the fused UNet path
-            adapted_feats = self.det_adaptor(b)
+            # adapted features come from the full feature fusion path
+            adapted_feats = self.det_adaptor(features)
             try:
                 heat, size, offset = self.det_head(adapted_feats)
             except Exception:
@@ -797,13 +796,15 @@ class Swin_BM_RGBT(nn.Module):
         self.det_head = head
 
     def get_unet_features_for_detection(self, rgb, t):
-        """Return adapted UNet-fused features suitable for the detection head.
+        """Return adapted fused features suitable for the detection head.
 
-        This uses the same fused UNet -> backbone path as the detection forward
+        This uses the same full fusion path as the detection forward
         and applies the `det_adaptor` so the returned tensor is ready for the head.
         """
         b = self.backbone(self.unet(rgb, t))
-        adapted = self.det_adaptor(b)
+        r, t = self.backbone(rgb), self.backbone(t)
+        features = r + t + b
+        adapted = self.det_adaptor(features)
         return adapted
 
     def get_backbone_features(self, x):

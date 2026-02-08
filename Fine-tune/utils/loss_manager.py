@@ -45,8 +45,6 @@ class LossManager:
         self.heatmap_bce_logits = None
         self.heatmap_loss = None
         self.l1 = None
-        self.use_bg_suppress = True
-        self.bg_suppress_weight = 0.01
         
         # Initialize losses
         self._initialize_losses()
@@ -87,9 +85,6 @@ class LossManager:
         
         self.l1 = nn.L1Loss(reduction='sum')
         
-        # Background suppression loss
-        self.use_bg_suppress = getattr(args, 'use_bg_suppress', True)
-        self.bg_suppress_weight = getattr(args, 'bg_suppress_weight', 0.01)
     
     def compute_counting_losses(
         self,
@@ -185,6 +180,12 @@ class LossManager:
         size_target = detection_targets['size_target']
         offset_target = detection_targets['offset_target']
         
+        # Label smoothing: Replace hard targets (0/1) with soft labels (0.05/0.95)
+        # Prevents overconfident predictions and improves calibration
+        label_smoothing = getattr(self.args, 'label_smoothing', 0.0)
+        if label_smoothing > 0:
+            heat_target = torch.clamp(heat_target, min=label_smoothing, max=1.0 - label_smoothing)
+        
         keypoint_mode = getattr(self.args, 'keypoint_mode', False)
         
         # Heatmap loss: BCE or focal-on-logits
@@ -192,38 +193,40 @@ class LossManager:
         heat_pred_clipped = torch.clamp(heat_pred, -10, 10)  # Prevent extreme values
         
         pos_mask = (heat_target > 0).float()
+        neg_mask = 1.0 - pos_mask
+        
         if self.use_focal:
             # Use clipped predictions for focal loss
             ce = self.heatmap_bce_logits(heat_pred_clipped, heat_target)
             # Sigmoid with clamping for numerical stability
             p = torch.sigmoid(heat_pred_clipped)
-            p_t = p * pos_mask + (1.0 - p) * (1.0 - pos_mask)
+            p_t = p * pos_mask + (1.0 - p) * neg_mask
             focal_factor = (self.focal_alpha * torch.pow(1.0 - p_t, self.focal_gamma)).detach()
             loss_map = focal_factor * ce
         else:
             loss_map = self.heatmap_loss(heat_pred_clipped, heat_target)
+        
+        # Background suppression: Penalize high activations in background regions
+        # This explicitly teaches the model that background should have LOW scores
+        bg_suppression_weight = getattr(self.args, 'bg_suppression_weight', 0.0)
+        if bg_suppression_weight > 0:
+            # Compute background activation penalty (high predictions in background = bad)
+            p_bg = torch.sigmoid(heat_pred_clipped) * neg_mask
+            # L2 penalty on background activations (pushes them toward 0)
+            bg_loss = (p_bg ** 2).sum() / (neg_mask.sum().clamp(min=1.0) + 1e-6)
+            loss_map = loss_map + bg_suppression_weight * bg_loss
 
         pos_loss = (loss_map * pos_mask).sum()
         
         # Negative mining with gradient clipping for stability
         if getattr(self.args, 'det_neg_topk_ratio', None):
             ratio = float(self.args.det_neg_topk_ratio)
-            neg_map = (loss_map * (1.0 - pos_mask)).view(loss_map.size(0), -1)
+            neg_map = (loss_map * neg_mask).view(loss_map.size(0), -1)
             k = max(1, int(ratio * neg_map.size(1)))
             topk_vals, _ = torch.topk(neg_map, k, dim=1)
             neg_loss = topk_vals.sum()
         else:
-            neg_loss = (loss_map * (1.0 - pos_mask)).sum()
-        
-        # Background suppression with proper scaling
-        if self.use_bg_suppress:
-            # Only apply to high-confidence background predictions
-            bg_mask = (heat_target < 0.01).float()
-            # Use sigmoid for probability scale (0-1)
-            bg_prob = torch.sigmoid(heat_pred_clipped)
-            # Gentle penalty for high background predictions
-            bg_penalty = (bg_prob * bg_mask).sum() * self.bg_suppress_weight * 0.01  # Reduced scale
-            neg_loss = neg_loss + bg_penalty
+            neg_loss = (loss_map * neg_mask).sum()
         
         # Normalize by number of positive pixels + small constant for stability
         num_pixels = float(loss_map.numel())
@@ -256,8 +259,8 @@ class LossManager:
         
         off_l = self.l1(offset_pred * mask2, offset_target * mask2) / num_pos
 
-        # Scale detection loss properly
-        det_loss = (hm_loss * 0.1 + size_l * 0.1 + off_l * 0.1) * self.args.det_weight
+        # Scale detection loss properly (Phase 6.2: Removed 0.1 multipliers for stronger learning signal)
+        det_loss = (hm_loss + size_l + off_l) * self.args.det_weight
 
         # Return detailed components for logging/diagnostics
         return {

@@ -30,6 +30,14 @@ DEFAULT_HEATMAP_SIGMA = 0.8  # Gaussian kernel sigma for target generation
 DEFAULT_HEATMAP_POS_WEIGHT = 7.0  # Positive class weight for imbalanced heatmap
 DEFAULT_DET_NEG_TOPK_RATIO = 0.1  # Fraction of hardest negatives to include in loss
 
+# Background Suppression: Penalizes high activations in background regions
+# Helps reduce false positives by explicitly teaching model that background = low scores
+DEFAULT_BG_SUPPRESSION_WEIGHT = 0.0  # Set to 0.05-0.2 to enable (0.0 = disabled)
+
+# Label Smoothing: Replaces hard 0/1 targets with soft labels (e.g., 0.05/0.95)
+# Prevents overconfident predictions and improves score calibration
+DEFAULT_LABEL_SMOOTHING = 0.0  # Set to 0.05-0.1 to enable (0.0 = disabled)
+
 # ============================================================================
 # Focal Loss Configuration
 # ============================================================================
@@ -39,12 +47,11 @@ DEFAULT_FOCAL_ALPHA = 0.75  # Class balance: higher for sparse positives
 DEFAULT_FOCAL_GAMMA = 2.0   # Hard example focus: higher = more focus on hard examples
 
 # ============================================================================
-# False Positive Reduction
+# Adaptive Threshold (Evaluation)
 # ============================================================================
-BOUNDARY_SUPPRESS_MARGIN = 4  # Pixel margin to suppress detections near edges
-DEFAULT_BG_SUPPRESS_WEIGHT = 0.01  # Weight for background suppression loss
-ADAPTIVE_THRESHOLD_STD_MULTIPLIER = 1.5  # Threshold = mean + 1.5*std for image statistics
-ADAPTIVE_THRESHOLD_MAX_CAP = 0.3  # Cap adaptive threshold at 30%
+ADAPTIVE_THRESHOLD_PERCENTILE = 98  # Percentile for adaptive thresholding
+ADAPTIVE_THRESHOLD_MIN_SCORE = 0.5  # Lower bound for adaptive threshold
+ADAPTIVE_THRESHOLD_MAX_SCORE = 0.5  # Upper bound for adaptive threshold
 
 # ============================================================================
 # Evaluation Metrics

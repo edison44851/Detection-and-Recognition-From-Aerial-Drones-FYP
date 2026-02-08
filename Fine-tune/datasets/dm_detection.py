@@ -177,7 +177,7 @@ class DetectionDataset(Dataset):
     - Random crop: crops random regions to simulate localized detection
     """
 
-    def __init__(self, root, split='train', transform=None, output_stride=4, sigma=2,
+    def __init__(self, root, split='train', transform=None, output_stride=4, sigma=0.8,
                  rgb_transform=None, t_transform=None, aug_scale=None, aug_flip=False, 
                  aug_crop_size=0, thermal_clahe=True, thermal_clahe_clip=2.0):
         self.root = root

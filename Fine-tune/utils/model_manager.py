@@ -70,13 +70,9 @@ class ModelManager:
             use_deconv=use_deconv,
             keypoint_only=keypoint_only,
             use_fpn=getattr(args, 'use_fpn', False),
-            boundary_suppress=getattr(args, 'boundary_suppress', True),
-            suppress_margin=getattr(args, 'suppress_margin', 4)
+            use_gn=getattr(args, 'det_use_gn', False),
+            use_logits=getattr(args, 'use_bce_logits', False)
         )
-        
-        # Configure head options
-        self._deferred_det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
-        self._deferred_det_head.head.use_gn = getattr(args, 'det_use_gn', False)
     
     def _create_adaptor(self, args: Any) -> None:
         """Create detection adaptor (1x1 conv + normalization + ReLU)."""
@@ -101,7 +97,7 @@ class ModelManager:
         except Exception as e:
             logging.warning('Failed to create det_adaptor: %s. Continuing without adaptor.', repr(e))
     
-    def load_checkpoint(self, checkpoint_path: str) -> Tuple[Optional[Dict], int]:
+    def load_checkpoint(self, checkpoint_path: str) -> Tuple[Optional[Dict], int, Optional[Dict]]:
         """
         Load model checkpoint from file.
         
@@ -109,7 +105,7 @@ class ModelManager:
             checkpoint_path: Path to checkpoint (.pth or .tar)
             
         Returns:
-            Tuple of (optimizer_state, start_epoch) or (None, 0) if not found
+            Tuple of (optimizer_state, start_epoch, scheduler_state) or (None, 0, None) if not found
         """
         logging.info('Loading checkpoint from %s', checkpoint_path)
         file_ext = checkpoint_path.rsplit('.', 1)[-1]
@@ -121,13 +117,14 @@ class ModelManager:
                 state_dict = self._remap_checkpoint_keys(state_dict)
                 self._load_state_dict(state_dict)
                 optimizer_state = checkpoint.get('optimizer_state_dict', None)
+                scheduler_state = checkpoint.get('scheduler_state_dict', None)
                 start_epoch = checkpoint.get('epoch', -1) + 1
-                return optimizer_state, start_epoch
+                return optimizer_state, start_epoch, scheduler_state
             elif file_ext == 'pth':
                 state_dict = torch.load(checkpoint_path, map_location=self.device)
                 state_dict = self._remap_checkpoint_keys(state_dict)
                 self._load_state_dict(state_dict)
-                return None, 0
+                return None, 0, None
         except OSError as e:
             logging.error('Failed to load checkpoint: %s', str(e))
             raise
