@@ -80,7 +80,11 @@ class EvaluationManager:
                         heat_pred = output_dict.get('heatmap', output_dict.get('heat', None))
                         offset_pred = output_dict.get('offset', None)
                     else:
-                        heat_pred, offset_pred = output_dict[:2] if len(output_dict) >= 2 else (output_dict, None)
+                        # Model returns (density, (heat, size, offset)) for detection mode
+                        if len(output_dict) >= 2 and isinstance(output_dict[1], tuple) and len(output_dict[1]) >= 3:
+                            heat_pred, size_pred, offset_pred = output_dict[1]
+                        else:
+                            heat_pred, offset_pred = output_dict[:2] if len(output_dict) >= 2 else (output_dict, None)
                     
                     # Extract detections
                     preds = self._evaluate_detection_sample(heat_pred, offset_pred, sample)
@@ -90,9 +94,22 @@ class EvaluationManager:
             # Compute AP
             if len(all_gts) > 0:
                 ap_result = compute_ap(all_preds, all_gts, dist_thresh=getattr(args, 'ap_dist_thresh', 8.0))
-                ap = ap_result[0] if isinstance(ap_result, tuple) else ap_result
+                if isinstance(ap_result, tuple):
+                    ap, precisions, recalls = ap_result
+                else:
+                    ap, precisions, recalls = ap_result, np.zeros((0,)), np.zeros((0,))
                 if self.rank == 0:
                     logging.info(f'{split_name} AP: {ap:.4f}')
+                    if precisions.size > 0 and recalls.size > 0:
+                        f1 = (2 * precisions * recalls) / (precisions + recalls + 1e-12)
+                        best_idx = int(np.argmax(f1))
+                        logging.info(
+                            f'{split_name} PR: P@bestF1={precisions[best_idx]:.4f} '
+                            f'R@bestF1={recalls[best_idx]:.4f} F1={f1[best_idx]:.4f}'
+                        )
+                        logging.info(
+                            f'{split_name} PR (all): P={precisions[-1]:.4f} R={recalls[-1]:.4f}'
+                        )
         else:
             # Counting evaluation
             N = 0
@@ -151,16 +168,14 @@ class EvaluationManager:
 
         # Update early-stopping counters based on detection AP
         if ap is not None:
-            if ap > self.trainer.best_ap:
+            if should_save:
                 self.trainer.best_ap = ap
                 self.trainer.no_improve_ap = 0
-                if self.rank == 0:
-                    logging.info(f'AP improved to {ap:.4f}')
             else:
                 self.trainer.no_improve_ap += 1
                 if self.rank == 0:
                     logging.info(f'AP did not improve ({self.trainer.no_improve_ap}/{self.trainer.det_patience})')
-                
+
                 if self.trainer.no_improve_ap >= self.trainer.det_patience:
                     self.trainer.should_stop = True
                     if self.rank == 0:
@@ -202,22 +217,27 @@ class EvaluationManager:
             # Extract peaks with NMS
             use_nms = True
             nms_kernel = getattr(self.trainer.args, 'nms_kernel', 3)
-            peaks = heatmap_peaks(hm, min_score=0.01, use_nms=use_nms, nms_kernel=nms_kernel)
+            min_score = getattr(self.trainer.args, 'det_score_threshold', 0.5)
 
-            # Adaptive threshold
-            if getattr(self.trainer.args, 'adaptive_threshold', True):
-                percentile = getattr(self.trainer.args, 'adaptive_percentile', 75)
-                min_score = np.percentile(hm[hm > 0.01], percentile) if len(hm[hm > 0.01]) > 0 else 0.01
-            else:
-                min_score = getattr(self.trainer.args, 'det_score_threshold', 0.01)
-            
-            peaks = heatmap_peaks(hm, min_score=min_score, use_nms=use_nms, nms_kernel=nms_kernel)
+            peaks = heatmap_peaks(
+                hm,
+                min_score=min_score,
+                use_nms=use_nms,
+                nms_kernel=nms_kernel
+            )
             
             preds_px = []
+            off_map = None
+            if offset_pred is not None:
+                off_map = offset_pred[idx].detach().cpu().numpy()
             for x_out, y_out, score in peaks:
-                # Convert output space to input space
-                x_in = x_out * self.trainer.downsample_ratio
-                y_in = y_out * self.trainer.downsample_ratio
+                ix = int(x_out)
+                iy = int(y_out)
+                offx = float(off_map[0, iy, ix]) if off_map is not None else 0.0
+                offy = float(off_map[1, iy, ix]) if off_map is not None else 0.0
+                # Convert output space to input space (with sub-pixel offsets)
+                x_in = (x_out + offx) * self.trainer.downsample_ratio
+                y_in = (y_out + offy) * self.trainer.downsample_ratio
                 preds_px.append((x_in, y_in, score))
 
             # Optional NMS/filtering at eval time
@@ -229,14 +249,8 @@ class EvaluationManager:
                 nms_sigma = getattr(self.trainer.args, 'eval_nms_sigma', 1.0)
                 preds_px = self._soft_nms_points(preds_px, nms_sigma)
             
-            # Count-aware filtering
-            if getattr(self.trainer.args, 'count_aware_filtering', True) and sample is not None:
-                gt_count = len(sample['points'][idx]) if isinstance(sample['points'][idx], torch.Tensor) else 0
-                max_dets = max(1, int(gt_count * 1.5))
-                preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:max_dets]
-            else:
-                max_dets = getattr(self.trainer.args, 'max_detections', 300)
-                preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:max_dets]
+            max_dets = getattr(self.trainer.args, 'max_detections', 300)
+            preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:max_dets]
             
             all_preds.append(preds_px)
         
@@ -313,7 +327,6 @@ class EvaluationManager:
         if self.trainer.args.task == 'detection':
             if ap is not None:
                 if ap > self.trainer.best_ap:
-                    self.trainer.best_ap = ap
                     msg = f'Best AP updated: {ap:.4f}'
                     return True, msg
                 else:

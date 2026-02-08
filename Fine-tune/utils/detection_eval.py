@@ -45,7 +45,7 @@ def _is_local_maximum(hm: np.ndarray, y: int, x: int) -> bool:
 
 
 def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: int = 200, 
-                   use_nms: bool = True, nms_kernel: int = 3, adaptive_threshold: bool = True) -> List[Tuple[float, float, float]]:
+                   use_nms: bool = True, nms_kernel: int = 3) -> List[Tuple[float, float, float]]:
     """Extract peaks from heatmap with optional NMS (CenterNet style).
 
     Args:
@@ -54,7 +54,6 @@ def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: 
         max_detections: maximum number of detections to return
         use_nms: whether to apply max-pooling NMS before peak extraction
         nms_kernel: kernel size for NMS (default 3)
-        adaptive_threshold: whether to use adaptive threshold based on image statistics
 
     Returns:
         List of (x_out, y_out, score) in output-grid coordinates (cols, rows).
@@ -66,21 +65,6 @@ def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: 
     # Apply NMS if requested (CenterNet uses this to suppress nearby duplicates)
     if use_nms:
         heatmap = _nms(heatmap, kernel=nms_kernel)
-    
-    # NEW: Adaptive thresholding for drone images
-    if adaptive_threshold:
-        # Remove very low values first
-        heatmap_clean = heatmap.copy()
-        heatmap_clean[heatmap_clean < 0.01] = 0
-        
-        # Calculate statistics
-        non_zero = heatmap_clean[heatmap_clean > 0]
-        if len(non_zero) > 0:
-            mean_val = np.mean(non_zero)
-            std_val = np.std(non_zero)
-            # Adaptive threshold: mean + 1.5*std for drone images (higher threshold for background)
-            adaptive_min_score = max(min_score, mean_val + std_val * 1.5)
-            min_score = min(adaptive_min_score, 0.3)  # Cap at reasonable value
     
     # Vectorized 3x3 local-maximum detection using sliding-window max (numpy)
     pads = np.pad(heatmap, ((1, 1), (1, 1)), mode='constant', constant_values=-np.inf)
@@ -96,25 +80,7 @@ def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: 
         return []
     scores = heatmap[ys, xs].astype(float)
     
-    # NEW: Filter by spatial distribution for drone images
-    # Background false positives often have irregular spatial patterns
-    if len(scores) > 10:
-        # Calculate density of detections
-        from scipy.spatial import KDTree
-        points = np.column_stack([xs, ys])
-        tree = KDTree(points)
-        # Count neighbors within radius
-        radius = min(H, W) * 0.1  # 10% of image dimension
-        densities = tree.query_ball_point(points, r=radius, return_length=True)
-        
-        # Weight scores by density (clustered detections get higher weight)
-        density_weights = np.minimum(densities / 5.0, 2.0)  # Normalize and cap
-        weighted_scores = scores * density_weights
-        
-        # Sort by weighted scores
-        order = np.argsort(weighted_scores)[::-1]
-    else:
-        order = np.argsort(scores)[::-1]
+    order = np.argsort(scores)[::-1]
     
     out = []
     for i in order[:max_detections]:

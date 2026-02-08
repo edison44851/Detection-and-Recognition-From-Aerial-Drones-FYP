@@ -22,6 +22,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from torch import optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from torch.utils.data.dataloader import default_collate
 import logging
@@ -117,6 +118,7 @@ class RegTrainer(Trainer):
     def _create_optimizer(self) -> None:
         """Create optimizer via OptimizerBuilder."""
         self.optimizer = OptimizerBuilder.create_optimizer(self.model, self.args, self.rank)
+        self.scheduler = None  # Will be initialized in setup()
 
     def _initialize_losses(self) -> None:
         """Initialize loss functions via LossManager."""
@@ -165,9 +167,10 @@ class RegTrainer(Trainer):
         
         # Step 5: Load checkpoint if resuming
         saved_optimizer_state = None
+        saved_scheduler_state = None
         saved_start_epoch = 0
         if args.resume:
-            saved_optimizer_state, saved_start_epoch = self.model_manager.load_checkpoint(args.resume)
+            saved_optimizer_state, saved_start_epoch, saved_scheduler_state = self.model_manager.load_checkpoint(args.resume)
         
         # Step 6: Attach detection head before freezing/DDP
         if args.task == 'detection':
@@ -195,6 +198,22 @@ class RegTrainer(Trainer):
                 self.start_epoch = saved_start_epoch
             except RuntimeError as e:
                 logging.warning('Failed to load optimizer state: %s. Continuing with fresh optimizer.', repr(e))
+        
+        # Step 10b: Create learning rate scheduler (Cosine annealing)
+        total_epochs = args.max_epoch
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=total_epochs, eta_min=1e-7)
+        # Restore scheduler state if available
+        if saved_scheduler_state is not None:
+            try:
+                self.scheduler.load_state_dict(saved_scheduler_state)
+                logging.info(f'Loaded scheduler state from checkpoint')
+            except Exception as e:
+                logging.warning('Failed to load scheduler state: %s. Continuing with fresh scheduler.', repr(e))
+        else:
+            # Advance scheduler to current epoch if resuming without scheduler state
+            for _ in range(self.start_epoch):
+                self.scheduler.step()
+        logging.info(f'Created CosineAnnealingLR scheduler (T_max={total_epochs}, start_epoch={self.start_epoch})')
         
         # Step 11: Initialize losses and metrics
         self._initialize_losses()
@@ -235,9 +254,9 @@ class RegTrainer(Trainer):
                     if getattr(self, 'should_stop', False):
                         logging.info('Early stopping triggered at epoch %d', epoch)
                         break
-                    # Run test epoch when validation shows improvement
-                    if epoch >= args.val_start and (mse_is_best or mae_is_best):
-                        self.test_epoch()
+                    # Always evaluate test to track best test model even when val split exists
+                    if epoch >= args.val_start:
+                        self.test_epoch(save_best=True)
                 else:
                     # No validation set - use test set for both evaluation and best model selection
                     logging.info('No validation data found; running test epoch for evaluation and model selection.')
@@ -318,8 +337,8 @@ class RegTrainer(Trainer):
         epoch_game = AverageMeter()
         epoch_mse = AverageMeter()
         epoch_rd_loss = AverageMeter()
-        epoch_bg_suppress = AverageMeter()
         epoch_start = time.time()
+        nan_inf_count = 0  # Track NaN/Inf occurrences
         self.model.train()
 
         dataloader = tqdm(self.dataloader, desc="Training", leave=False, dynamic_ncols=True) if self.rank == 0 else self.dataloader
@@ -357,9 +376,11 @@ class RegTrainer(Trainer):
                     det_losses = self.loss_manager.compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
                     total_loss = det_losses['det_loss']
                     
-                    # FIXED: Check for NaN/Inf in loss
+                    # Check for NaN/Inf in loss with diagnostics
                     if torch.isnan(total_loss) or torch.isinf(total_loss):
-                        logging.warning(f"NaN/Inf detected in loss at step {step}, skipping batch")
+                        nan_inf_count += 1
+                        logging.warning(f"[Epoch {self.epoch}] NaN/Inf detected at step {step} (total occurrences: {nan_inf_count}). "
+                                      f"heat_pred range: [{heat_pred.min():.4f}, {heat_pred.max():.4f}]. Skipping batch.")
                         continue
                     
                     # Log detailed components
@@ -369,12 +390,6 @@ class RegTrainer(Trainer):
                     epoch_size_loss.update(float(det_losses['size_l']), N)
                     epoch_off_loss.update(float(det_losses['off_l']), N)
                     
-                    # Track background suppression
-                    if self.loss_manager.use_bg_suppress:
-                        bg_mask = (detection_targets['heat_target'] < 0.01).float()
-                        bg_prob = torch.sigmoid(torch.clamp(heat_pred, -10, 10))
-                        bg_penalty = (bg_prob * bg_mask).mean().item()
-                        epoch_bg_suppress.update(bg_penalty, N)
                 else:
                     # Counting task - only counting losses
                     img_h = int(outputs.size(2) * self.downsample_ratio)
@@ -403,10 +418,12 @@ class RegTrainer(Trainer):
                 self.optimizer.zero_grad()
                 total_loss.backward()
                 
-                # FIXED: Stronger gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                # Gradient clipping for stability (increased from 0.5 to allow sufficient signal)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 
                 self.optimizer.step()
+                if self.scheduler is not None:
+                    self.scheduler.step()
 
                 # Compute gradient norms for detection head/adaptor (diagnostics)
                 if self.rank == 0:
@@ -454,16 +471,27 @@ class RegTrainer(Trainer):
                 logging.info('Epoch {} Avg Grad Norm (det_head/adaptor): {:.6f}'.format(self.epoch, epoch_grad_norm.get_avg()))
             except Exception:
                 pass
+            # Log NaN/Inf statistics
+            if nan_inf_count > 0:
+                logging.warning(f'Epoch {self.epoch} encountered {nan_inf_count} batches with NaN/Inf loss (skipped)')
+            # Log learning rate
+            if self.scheduler is not None:
+                lr = self.optimizer.param_groups[0]['lr']
+                logging.info(f'Epoch {self.epoch} Learning rate: {lr:.2e}')
         
         # Save checkpoint
         model_state_dic = self.model.state_dict()
         if self.rank == 0:
             save_path = os.path.join(self.save_dir, '{}_ckpt.tar'.format(self.epoch))
-            torch.save({
+            checkpoint = {
                 'epoch': self.epoch,
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'model_state_dict': model_state_dic
-            }, save_path)
+            }
+            # Save scheduler state if available
+            if self.scheduler is not None:
+                checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+            torch.save(checkpoint, save_path)
             self.save_list.append(save_path)
 
     def val_epoch(self) -> Tuple[bool, bool]:

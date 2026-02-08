@@ -20,13 +20,13 @@ set -euo pipefail
 
 # --- Data & Paths ---
 DATA_DIR=".data/DroneRGBT_converted"
-SAVE_DIR="./checkpoints"
+SAVE_DIR="./checkpoints_phase6"
 RESUME=".weights/drone_rgbt_best_494_781.pth"
 
 # --- Device & Distributed ---
-NPROC=1
-DEVICE="0"
-NUM_WORKERS=4
+NPROC=2
+DEVICE="1,2"
+NUM_WORKERS=1
 DDP_TIMEOUT=3600  # DDP watchdog timeout in seconds (default: 1800=30min, set to 3600=1hr)
 
 # --- Task Selection & Freezing ---
@@ -38,12 +38,12 @@ UNFREEZE_EPOCH=-1
 
 # --- Training General ---
 CROP_SIZE=224
-BATCH_SIZE=1
+BATCH_SIZE=4
 LR=1e-5
 WEIGHT_DECAY=0.0001
-MAX_EPOCH=1
+MAX_EPOCH=300
 VAL_EPOCH=2
-VAL_START=0
+VAL_START=10
 MAX_MODEL_NUM=1
 
 # --- Detection Architecture ---
@@ -61,31 +61,27 @@ KEYPOINT_MODE=1
 
 # --- Detection Loss & Heatmap ---
 DET_WEIGHT=1.0
-DET_POS_WEIGHT=7.0
+DET_POS_WEIGHT=12.0
 DET_SIGMA=0.8
 USE_BCE_LOGITS=1
-DET_NEG_TOPK_RATIO=0.1
+DET_NEG_TOPK_RATIO=0.25
+BG_SUPPRESSION_WEIGHT=0.03  # Reduced from 0.1 to allow more predictions (was too aggressive)
+LABEL_SMOOTHING=0.0         # Disabled (was 0.05, made model under-confident)
 
 # --- Focal Loss (Detection) ---
 USE_FOCAL_HEATMAP=1
-FOCAL_ALPHA=0.75
-FOCAL_GAMMA=1.5
+FOCAL_ALPHA=0.85
+FOCAL_GAMMA=2.5
 
 # --- Size Loss & IoU ---
 USE_IOU_SIZE=1
 IOU_WEIGHT=0.3
 
-# --- False Positive Reduction (Stability) ---
-BOUNDARY_SUPPRESS=1
-SUPPRESS_MARGIN=4
-USE_BG_SUPPRESS=1
-BG_SUPPRESS_WEIGHT=0.01
-ADAPTIVE_THRESHOLD=1
-FILTER_BOUNDARY_DETS=1
-COUNT_AWARE_FILTERING=1
+# --- Detection Thresholds (Eval) ---
+DET_SCORE_THRESHOLD=0.3
 
 # --- Detection Head Learning Rate ---
-HEAD_LR=0.002
+HEAD_LR=0.003
 
 # --- Evaluation & Early Stopping ---
 AP_DIST_THRESH=8.0
@@ -95,13 +91,13 @@ EVAL_SOFT_NMS_SIGMA=0.5
 DET_PATIENCE=10
 
 # --- Data Augmentation (Detection) ---
-AUG_SCALE_MIN=0.5
-AUG_SCALE_MAX=2.0
+AUG_SCALE_MIN=0.7
+AUG_SCALE_MAX=1.5
 AUG_FLIP=1
 AUG_CROP_SIZE=224
 
 # --- Thermal Preprocessing (Phase B) ---
-THERMAL_CLAHE=0
+THERMAL_CLAHE=1
 THERMAL_CLAHE_CLIP=2.0
 
 # --- Counting Task Parameters (DM-Count) ---
@@ -147,12 +143,12 @@ TASK SELECTION & FREEZING:
 
 TRAINING GENERAL:
   --crop-size N                Crop size (default: 224)
-  --batch-size N               Batch size (default: 1)
+  --batch-size N               Batch size (default: 4)
   --lr LR                      Learning rate (default: 1e-5)
   --weight-decay W             Weight decay (default: 1e-4)
   --max-epoch N                Max epochs (default: 100)
-  --val-epoch N                Validation frequency (default: 1)
-  --val-start N                Start validation at epoch (default: 0)
+  --val-epoch N                Validation frequency (default: 2)
+  --val-start N                Start validation at epoch (default: 10)
   --max-model-num N            Max checkpoints to keep (default: 1)
 
 DETECTION ARCHITECTURE:
@@ -171,27 +167,21 @@ KEYPOINT MODE (PHASE 1):
 DETECTION LOSS & HEATMAP:
   --det-weight W               Detection loss weight (default: 0.1)
   --det-pos-weight W           Positive heatmap weight (default: 7.0)
-  --det-sigma S                Gaussian sigma for heatmaps (default: 0.6)
+  --det-sigma S                Gaussian sigma for heatmaps (default: 0.8)
   --use-bce-logits             Use BCEWithLogitsLoss (default: yes)
-  --det-neg-topk-ratio R       Hard negative ratio (default: 0.2)
+  --det-neg-topk-ratio R       Hard negative ratio (default: 0.1)
 
 FOCAL LOSS (DETECTION):
   --use-focal-heatmap          Enable focal loss (default: yes)
-  --focal-alpha A              Focal loss alpha (default: 0.85)
-  --focal-gamma G              Focal loss gamma (default: 2.0)
+  --focal-alpha A              Focal loss alpha (default: 0.75)
+  --focal-gamma G              Focal loss gamma (default: 1.5)
 
 SIZE LOSS & IoU:
   --use-iou-size               Enable IoU size loss (default: yes)
   --iou-weight W               IoU loss weight (default: 0.3)
 
-FALSE POSITIVE REDUCTION (STABILITY):
-  --boundary-suppress          Apply boundary suppression (default: yes)
-  --suppress-margin N          Boundary margin size (default: 4)
-  --use-bg-suppress            Enable background suppression (default: yes)
-  --bg-suppress-weight W       Background suppression weight (default: 0.01)
-  --adaptive-threshold         Use adaptive threshold (default: yes)
-  --filter-boundary-dets       Filter boundary detections (default: yes)
-  --count-aware-filtering      Enable count-aware filtering (default: yes)
+DETECTION THRESHOLDS (EVAL):
+  --det-score-threshold S      Base detection score threshold (default: 0.3)
 
 DETECTION HEAD LEARNING RATE:
   --head-lr LR                 Detection head learning rate (default: 0.0002)
@@ -199,7 +189,7 @@ DETECTION HEAD LEARNING RATE:
 EVALUATION & EARLY STOPPING:
   --ap-dist-thresh DIST        AP distance threshold in pixels (default: 8.0)
   --eval-nms TYPE              NMS type: radius|soft (default: radius)
-  --eval-nms-radius R          Radius NMS radius (default: 3.0)
+  --eval-nms-radius R          Radius NMS radius (default: 2.0)
   --eval-soft-nms-sigma S      Soft-NMS sigma (default: 0.5)
   --det-patience N             Early stopping patience (default: 10)
 
@@ -334,21 +324,9 @@ while [[ $# -gt 0 ]]; do
     --iou-weight)
       IOU_WEIGHT="$2"; shift 2;;
     
-    # False Positive Reduction (Stability)
-    --boundary-suppress)
-      BOUNDARY_SUPPRESS=1; shift 1;;
-    --suppress-margin)
-      SUPPRESS_MARGIN="$2"; shift 2;;
-    --use-bg-suppress)
-      USE_BG_SUPPRESS=1; shift 1;;
-    --bg-suppress-weight)
-      BG_SUPPRESS_WEIGHT="$2"; shift 2;;
-    --adaptive-threshold)
-      ADAPTIVE_THRESHOLD=1; shift 1;;
-    --filter-boundary-dets)
-      FILTER_BOUNDARY_DETS=1; shift 1;;
-    --count-aware-filtering)
-      COUNT_AWARE_FILTERING=1; shift 1;;
+    # Detection Thresholds (Eval)
+    --det-score-threshold)
+      DET_SCORE_THRESHOLD="$2"; shift 2;;
     
     # Detection Head Learning Rate
     --head-lr)
@@ -483,14 +461,8 @@ echo "--- Size Loss & IoU ---"
 echo "  use-iou-size: $USE_IOU_SIZE"
 echo "  iou-weight:   $IOU_WEIGHT"
 echo ""
-echo "--- False Positive Reduction (Stability) ---"
-echo "  boundary-suppress:    $BOUNDARY_SUPPRESS"
-echo "  suppress-margin:      $SUPPRESS_MARGIN"
-echo "  use-bg-suppress:      $USE_BG_SUPPRESS"
-echo "  bg-suppress-weight:   $BG_SUPPRESS_WEIGHT"
-echo "  adaptive-threshold:   $ADAPTIVE_THRESHOLD"
-echo "  filter-boundary-dets: $FILTER_BOUNDARY_DETS"
-echo "  count-aware-filtering: $COUNT_AWARE_FILTERING"
+echo "--- Detection Thresholds (Eval) ---"
+echo "  det-score-threshold: $DET_SCORE_THRESHOLD"
 echo ""
 echo "--- Detection Head Learning Rate ---"
 echo "  head-lr: $HEAD_LR"
@@ -551,13 +523,7 @@ if [[ "$NPROC" -eq 1 ]]; then
     --val-epoch "${VAL_EPOCH}"
     --val-start "${VAL_START}"
     --max-model-num "${MAX_MODEL_NUM}"
-    $( [[ "$BOUNDARY_SUPPRESS" -eq 1 ]] && echo "--boundary-suppress" )
-    --suppress-margin "${SUPPRESS_MARGIN}"
-    $( [[ "$USE_BG_SUPPRESS" -eq 1 ]] && echo "--use-bg-suppress" )
-    --bg-suppress-weight "${BG_SUPPRESS_WEIGHT}"
-    $( [[ "$ADAPTIVE_THRESHOLD" -eq 1 ]] && echo "--adaptive-threshold" )
-    $( [[ "$FILTER_BOUNDARY_DETS" -eq 1 ]] && echo "--filter-boundary-dets" )
-    $( [[ "$COUNT_AWARE_FILTERING" -eq 1 ]] && echo "--count-aware-filtering" )
+    --det-score-threshold "${DET_SCORE_THRESHOLD}"
     --head-conv "${HEAD_CONV}"
     $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" )
     --nms-kernel "${NMS_KERNEL}"
@@ -580,6 +546,8 @@ if [[ "$NPROC" -eq 1 ]]; then
     --focal-alpha "${FOCAL_ALPHA}"
     --focal-gamma "${FOCAL_GAMMA}"
     --det-neg-topk-ratio "${DET_NEG_TOPK_RATIO}"
+    --bg-suppression-weight "${BG_SUPPRESSION_WEIGHT}"
+    --label-smoothing "${LABEL_SMOOTHING}"
     $( [[ "$USE_IOU_SIZE" -eq 1 ]] && echo "--use-iou-size" )
     --iou-weight "${IOU_WEIGHT}"
     $( [[ -n "$EVAL_NMS" ]] && echo "--eval-nms $EVAL_NMS" )
@@ -619,13 +587,7 @@ else
     --val-epoch "${VAL_EPOCH}"
     --val-start "${VAL_START}"
     --max-model-num "${MAX_MODEL_NUM}"
-    $( [[ "$BOUNDARY_SUPPRESS" -eq 1 ]] && echo "--boundary-suppress" )
-    --suppress-margin "${SUPPRESS_MARGIN}"
-    $( [[ "$USE_BG_SUPPRESS" -eq 1 ]] && echo "--use-bg-suppress" )
-    --bg-suppress-weight "${BG_SUPPRESS_WEIGHT}"
-    $( [[ "$ADAPTIVE_THRESHOLD" -eq 1 ]] && echo "--adaptive-threshold" )
-    $( [[ "$FILTER_BOUNDARY_DETS" -eq 1 ]] && echo "--filter-boundary-dets" )
-    $( [[ "$COUNT_AWARE_FILTERING" -eq 1 ]] && echo "--count-aware-filtering" )
+    --det-score-threshold "${DET_SCORE_THRESHOLD}"
     --head-conv "${HEAD_CONV}"
     $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" )
     --nms-kernel "${NMS_KERNEL}"
@@ -648,6 +610,8 @@ else
     --focal-alpha "${FOCAL_ALPHA}"
     --focal-gamma "${FOCAL_GAMMA}"
     --det-neg-topk-ratio "${DET_NEG_TOPK_RATIO}"
+    --bg-suppression-weight "${BG_SUPPRESSION_WEIGHT}"
+    --label-smoothing "${LABEL_SMOOTHING}"
     $( [[ "$USE_IOU_SIZE" -eq 1 ]] && echo "--use-iou-size" )
     --iou-weight "${IOU_WEIGHT}"
     $( [[ -n "$EVAL_NMS" ]] && echo "--eval-nms $EVAL_NMS" )

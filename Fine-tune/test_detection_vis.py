@@ -187,16 +187,19 @@ def infer_and_visualize(args):
     # unet, reg_layer, det_head if present) permissively.
     model = Swin_BM_RGBT(pre_train=False)
     
-    # Create det_adaptor if it was used during training (GroupNorm + 1x1 conv)
-    # This is CRITICAL - must match training configuration
+    # Create det_adaptor if it was used during training (match GN/BN)
     in_ch = 768
-    for g in (32, 16, 8, 4, 2, 1):
-        if in_ch % g == 0:
-            gn_groups = g
-            break
+    if getattr(args, 'det_use_gn', False):
+        for g in (32, 16, 8, 4, 2, 1):
+            if in_ch % g == 0:
+                gn_groups = g
+                break
+        norm_layer = nn.GroupNorm(gn_groups, in_ch)
+    else:
+        norm_layer = nn.BatchNorm2d(in_ch)
     model.det_adaptor = nn.Sequential(
         nn.Conv2d(in_ch, in_ch, kernel_size=1),
-        nn.GroupNorm(gn_groups, in_ch),
+        norm_layer,
         nn.ReLU(inplace=True)
     )
     
@@ -204,11 +207,15 @@ def infer_and_visualize(args):
     head_conv = getattr(args, 'head_conv', 256)
     use_deconv = getattr(args, 'use_deconv', True)
     use_fpn = getattr(args, 'use_fpn', False)
-    det_head = DetectionHeadWrapper(in_channels=768, head_conv=head_conv, use_deconv=use_deconv,
-                                    keypoint_only=getattr(args, 'keypoint_mode', False), use_fpn=use_fpn)
-    # align logits/GN flags if present on args (optional; backward compatible)
-    det_head.head.use_logits = getattr(args, 'use_bce_logits', False)
-    det_head.head.use_gn = getattr(args, 'det_use_gn', False)
+    det_head = DetectionHeadWrapper(
+        in_channels=768,
+        head_conv=head_conv,
+        use_deconv=use_deconv,
+        keypoint_only=getattr(args, 'keypoint_mode', False),
+        use_fpn=use_fpn,
+        use_gn=getattr(args, 'det_use_gn', False),
+        use_logits=getattr(args, 'use_bce_logits', False)
+    )
     try:
         model.attach_det_head(det_head)
     except Exception:
@@ -275,12 +282,21 @@ def infer_and_visualize(args):
                 heat_np = heat_pred[i].detach().cpu().numpy()  # [1, H_out, W_out]
                 off_np = offset_pred[i].detach().cpu().numpy() if offset_pred is not None else None  # [2, H_out, W_out]
                 hm = heat_np[0]
+                
                 if np.nanmin(hm) < 0.0 or np.nanmax(hm) > 1.0:
+                    hm = np.clip(hm, -50.0, 50.0)
                     hm = 1.0 / (1.0 + np.exp(-hm))
-                # Apply NMS during peak extraction (unless disabled)
-                use_nms = not args.no_nms
+                
+                # Apply NMS during peak extraction (CenterNet-style max-pooling NMS)
+                use_nms = True  # Always apply peak extraction NMS
                 nms_kernel = getattr(args, 'nms_kernel', 3)
-                peaks = heatmap_peaks(hm, min_score=args.min_score, use_nms=use_nms, nms_kernel=nms_kernel)
+                peaks = heatmap_peaks(
+                    hm,
+                    min_score=args.min_score,
+                    use_nms=use_nms,
+                    nms_kernel=nms_kernel
+                )
+                
                 for x_out, y_out, score in peaks:
                     offx = float(off_np[0, int(y_out), int(x_out)]) if off_np is not None else 0.0
                     offy = float(off_np[1, int(y_out), int(x_out)]) if off_np is not None else 0.0
@@ -302,18 +318,13 @@ def infer_and_visualize(args):
             preds_per_image.append([(float(p[0]), float(p[1]), float(p[2])) for p in preds_px])
             gts_per_image.append(np.array(gt_pts) if len(gt_pts) > 0 else np.zeros((0,2)))
 
-            # apply NMS/topK before matching
-            # optional score thresholding before NMS
-            if args.score_thresh is not None:
-                st = float(args.score_thresh)
-                preds_px = [p for p in preds_px if p[2] >= st]
-            # NMS options (unless disabled by --no-nms)
-            if not args.no_nms:
-                if args.nms_radius:
-                    preds_px = nms_radius(preds_px, float(args.nms_radius))
-                if args.soft_nms_sigma:
-                    preds_px = soft_nms_gaussian(preds_px, float(args.soft_nms_sigma), score_thresh=args.score_thresh)
-            if args.max_dets:
+            # Apply optional post-extraction NMS (matches training's eval_nms settings)
+            if getattr(args, 'eval_nms_radius', None):
+                preds_px = nms_radius(preds_px, float(args.eval_nms_radius))
+            if getattr(args, 'eval_soft_nms_sigma', None):
+                preds_px = soft_nms_gaussian(preds_px, float(args.eval_soft_nms_sigma), score_thresh=None)
+            # Limit to max detections (matching training's max_detections)
+            if args.max_dets and args.max_dets > 0:
                 preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:int(args.max_dets)]
             # perform greedy matching between preds and GTs using distance threshold
             dist_thresh = args.ap_dist_thresh
@@ -468,7 +479,47 @@ def infer_and_visualize(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    """Parse command-line arguments for detection inference and visualization.
+    
+    This script mirrors training-time evaluation exactly using the same parameters:
+    
+    PARAMETER MAPPING TO TRAINING EVALUATION:
+    ========================================
+    
+    Peak Extraction (during inference):
+      --min-score         Training: det_score_threshold (default 0.3)
+      --nms-kernel        Training: nms_kernel (default 3, CenterNet max-pooling)
+    
+    Post-Extraction Filtering (optional, off by default to match training):
+      --eval-nms-radius   Training: eval_nms_radius (optional, default None)
+      --eval-soft-nms-sigma Training: eval_soft_nms_sigma (optional, default None)
+    
+    Output Limiting:
+      --max-dets          Training: max_detections (default 300)
+    
+    Matching & Metrics:
+      --ap-dist-thresh    Training: ap_dist_thresh (default 8.0 pixels)
+    
+    DEFAULT BEHAVIOR:
+      When run with no NMS arguments, this script produces IDENTICAL evaluation
+      results to what the model achieved during training. The AP metric should
+      match exactly what's reported in training logs.
+    
+    EXPERIMENTAL (Post-extraction NMS):
+      Add --eval-nms-radius or --eval-soft-nms-sigma to experiment with
+      stricter NMS settings. These are NOT used during training evaluation,
+      so results will differ from training metrics.
+    
+    Example (matches training evaluation):
+      python test_detection_vis.py --data-dir .data/DroneRGBT_converted \\
+        --ckpt checkpoints_phase5/best_model.pth --out visuals_detection
+    
+    Example (with experimental NMS):
+      python test_detection_vis.py --data-dir .data/DroneRGBT_converted \\
+        --ckpt checkpoints_phase5/best_model.pth --out visuals_detection \\
+        --eval-nms-radius 2.0 --eval-soft-nms-sigma 1.0
+    """
+    parser = argparse.ArgumentParser(description="Visualize and evaluate detection model inference.")
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--ckpt', default='')
     parser.add_argument('--out', default='visuals_detection')
@@ -482,21 +533,18 @@ def parse_args():
                         help='number of workers for data loading (default: 4)')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--downsample-ratio', type=int, default=8)
-    parser.add_argument('--min-score', type=float, default=0.01)
+    parser.add_argument('--min-score', type=float, default=0.3,
+                        help='minimum score threshold for peak detection (default: 0.3, matches training threshold)')
     parser.add_argument('--ap-dist-thresh', type=float, default=8.0,
                         help='distance threshold (pixels) used to match predictions to GT for the report')
-    parser.add_argument('--max-dets', type=int, default=None,
-                        help='keep top-K detections per image after NMS')
-    parser.add_argument('--nms-radius', type=float, default=None,
-                        help='radius (pixels) for simple radius-NMS to suppress nearby peaks')
+    parser.add_argument('--max-dets', type=int, default=300,
+                        help='keep top-K detections per image (default: 300, matches training)')
     parser.add_argument('--nms-kernel', type=int, default=3,
-                        help='NMS kernel size for max-pooling NMS during heatmap peak extraction (CenterNet-style)')
-    parser.add_argument('--no-nms', action='store_true',
-                        help='disable all NMS operations (peak extraction, radius-NMS, soft-NMS)')
-    parser.add_argument('--soft-nms-sigma', type=float, default=None,
-                        help='Gaussian soft-NMS sigma (pixels) for score decay; used after radius-NMS if provided')
-    parser.add_argument('--score-thresh', type=float, default=None,
-                        help='optional score threshold applied before/after NMS to filter predictions')
+                        help='NMS kernel size for max-pooling NMS during peak extraction (default: 3, CenterNet-style)')
+    parser.add_argument('--eval-nms-radius', type=float, default=None,
+                        help='radius (pixels) for radius-based NMS on extracted peaks (matches training --eval-nms-radius)')
+    parser.add_argument('--eval-soft-nms-sigma', type=float, default=None,
+                        help='sigma (pixels) for Gaussian soft-NMS decay (matches training --eval-soft-nms-sigma)')
     parser.add_argument('--scores-csv', type=str, default='scores.csv',
                         help='filename to write per-prediction scores/labels into (written into --out dir); set to empty to skip')
     parser.add_argument('--scores-hist', type=str, default='scores_hist.png',
@@ -513,6 +561,10 @@ def parse_args():
                         help='use deconv upsampling in head (must match training, default True)')
     parser.add_argument('--use-fpn', action='store_true',
                         help='enable FPN neck (must match training)')
+    parser.add_argument('--use-bce-logits', action='store_true',
+                        help='use logits output in head (must match training)')
+    parser.add_argument('--det-use-gn', action='store_true',
+                        help='use GroupNorm in head (must match training)')
     parser.add_argument('--keypoint-mode', action='store_true',
                         help='keypoint-only mode: model has no size head (Phase 1)')
     return parser.parse_args()

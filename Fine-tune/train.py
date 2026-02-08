@@ -85,6 +85,10 @@ def parse_args():
                         help='use BCEWithLogitsLoss (head outputs logits)')
     parser.add_argument('--det-neg-topk-ratio', type=float, default=0.2,
                         help='ratio of hardest negatives to include in heatmap loss')
+    parser.add_argument('--bg-suppression-weight', type=float, default=0.0,
+                        help='weight for background suppression loss (penalizes high activations in background regions)')
+    parser.add_argument('--label-smoothing', type=float, default=0.0,
+                        help='label smoothing epsilon for heatmap targets (e.g., 0.05 replaces 0/1 with 0.05/0.95)')
 
     # ====== FOCAL LOSS (DETECTION) ======
     parser.add_argument('--use-focal-heatmap', action='store_true',
@@ -100,21 +104,21 @@ def parse_args():
     parser.add_argument('--iou-weight', type=float, default=0.3,
                         help='weight for IoU size loss')
 
-    # ====== FALSE POSITIVE REDUCTION (STABILITY) ======
-    parser.add_argument('--boundary-suppress', action='store_true', default=True,
-                        help='apply boundary suppression to reduce false positives')
-    parser.add_argument('--suppress-margin', type=int, default=4,
-                        help='margin size for boundary suppression')
-    parser.add_argument('--use-bg-suppress', action='store_true', default=True,
-                        help='use background suppression loss')
-    parser.add_argument('--bg-suppress-weight', type=float, default=0.01,
-                        help='weight for background suppression loss')
-    parser.add_argument('--adaptive-threshold', action='store_true', default=True,
-                        help='use adaptive threshold based on image statistics')
-    parser.add_argument('--filter-boundary-dets', action='store_true', default=True,
-                        help='filter detections near image boundaries')
-    parser.add_argument('--count-aware-filtering', action='store_true', default=True,
-                        help='limit detections based on expected count')
+    # ====== DETECTION THRESHOLDS (EVAL) ======
+    parser.add_argument('--det-score-threshold', type=float, default=0.3,
+                        help='base detection score threshold')
+    parser.add_argument('--adaptive-threshold', action='store_true', default=False,
+                        help='enable adaptive thresholding (percentile or top-k)')
+    parser.add_argument('--adaptive-percentile', type=int, default=98,
+                        help='percentile for adaptive threshold (used when adaptive-topk=0)')
+    parser.add_argument('--adaptive-min-score', type=float, default=0.5,
+                        help='lower bound for adaptive threshold')
+    parser.add_argument('--adaptive-max-score', type=float, default=0.5,
+                        help='upper bound for adaptive threshold')
+    parser.add_argument('--adaptive-topk', type=int, default=0,
+                        help='if >0, keep top-k peaks and set threshold to kth score')
+    parser.add_argument('--adaptive-warmup-epochs', type=int, default=0,
+                        help='disable adaptive threshold for the first N epochs')
 
     # ====== DETECTION HEAD LEARNING RATE ======
     parser.add_argument('--head-lr', type=float, default=0.0002,

@@ -1,102 +1,131 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Wrapper to run post-training diagnostics:
-# 1) raw (no NMS, low threshold)
-# 2) tiled (SAHI-style)
-# 3) default visualization (moderate threshold + NMS)
+# Post-training evaluation and visualization script.
+#
+# Runs inference on test split using same settings as training evaluation,
+# then optionally applies experimental NMS settings to explore precision/recall
+# trade-offs.
+#
+# By default (with EVAL_NMS_RADIUS and EVAL_SOFT_NMS_SIGMA empty), produces
+# IDENTICAL results to training evaluation. Set these variables to experiment.
+#
+# Output structure:
+#   raw/     - Standard inference (matches training evaluation)
+#   tiles/   - Optional tiled inference (SAHI-style)
+#   orig/    - Standard inference with optional experimental NMS
 
-CKPT=${1:-checkpoints/1211-171944_teammate/best_model.pth}
-DATA_DIR=${2:-.data/DroneRGBT_converted}
-OUT_DIR=${3:-./.tmp_posttrain/1211-171944_teammate}
+CKPT=${1:-checkpoints_phase6_rgbt_cc/0208-213348/best_model_epoch_22.pth}
+DATA_DIR=${2:-.data/RGBT-CC_converted}
+OUT_DIR=${3:-./.tmp_posttrain_phase6_rgbt_cc/0208-213348}
 NUM_VIS=${4:-64}
 DOWNSAMPLE=${5:-4}
 
 # Inference settings
 NUM=10000  # Process all images (or large number)
-BATCH_SIZE=8
+BATCH_SIZE=4
 NUM_WORKERS=4
 
-MIN_SCORE_RAW=0.1
-MIN_SCORE_TILE=0.1
-MAX_DETS=150
-NMS_RADIUS=3.0
+MIN_SCORE_RAW=0.1    # Raw: Low threshold to capture all detections for analysis
+MIN_SCORE_TILE=0.3   # SAHI-style: Phase 6.3 adjusted for full features 
+MIN_SCORE_ORIG=0.4   # Production: Phase 6.3 baseline (note: may be too high, consider 0.15-0.20)
+AP_DIST_THRESH=15.0  # AP distance threshold (pixels) - increased to 15px to account for slight localization offsets
+MAX_DETS=300
+EVAL_NMS_RADIUS=4.0  # Match training configuration (radius NMS, 4.0 px)
+EVAL_SOFT_NMS_SIGMA=0.5  # Match training configuration
 NMS_KERNEL=3
 HEAD_CONV=256
 USE_DECONV=1
 KEYPOINT_MODE=1
 USE_FPN=1
-SCORE_THRESH_RAW=0.1
-SCORE_THRESH_TILE=0.1
-SCORE_THRESH_ORIG=0.1
-SOFT_NMS_SIGMA_RAW=
-SOFT_NMS_SIGMA_TILE=
-SOFT_NMS_SIGMA_ORIG=
+USE_BCE_LOGITS=1
+DET_USE_GN=1
 TILE_SIZE=512
 TILE_OVER=0.25
 
 mkdir -p "$OUT_DIR"/raw "$OUT_DIR"/tiles "$OUT_DIR"/orig
 
-echo "Post-train diagnostics"
+echo "Post-training evaluation"
 echo "  ckpt: $CKPT"
 echo "  data: $DATA_DIR"
 echo "  out:  $OUT_DIR"
+echo "  AP distance threshold: ${AP_DIST_THRESH}px (increased from 8px to account for slight localization offsets)"
+echo ""
+echo "Inference defaults match training evaluation exactly."
+echo "To enable post-extraction NMS, set EVAL_NMS_RADIUS or EVAL_SOFT_NMS_SIGMA"
+echo ""
 
-echo "\n1) Raw (no NMS, low threshold)"
+echo "1) Standard inference (training-like, no post-extraction NMS)"
 python3 Fine-tune/test_detection_vis.py \
   --data-dir "$DATA_DIR" \
   --ckpt "$CKPT" \
   --out "$OUT_DIR/raw" \
   --num "$NUM" --num-vis "$NUM_VIS" --downsample-ratio "$DOWNSAMPLE" \
   --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
-  --min-score "$MIN_SCORE_RAW" --ap-dist-thresh 8.0 \
-  --max-dets "$MAX_DETS" --no-nms \
+  --min-score "$MIN_SCORE_RAW" --ap-dist-thresh "$AP_DIST_THRESH" \
+  --max-dets "$MAX_DETS" --nms-kernel "$NMS_KERNEL" \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  ${SCORE_THRESH_RAW:+--score-thresh "$SCORE_THRESH_RAW"} \
-  ${SOFT_NMS_SIGMA_RAW:+--soft-nms-sigma "$SOFT_NMS_SIGMA_RAW"} \
+  $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" ) \
+  $( [[ "$DET_USE_GN" -eq 1 ]] && echo "--det-use-gn" ) \
+  ${EVAL_NMS_RADIUS:+--eval-nms-radius "$EVAL_NMS_RADIUS"} \
+  ${EVAL_SOFT_NMS_SIGMA:+--eval-soft-nms-sigma "$EVAL_SOFT_NMS_SIGMA"} \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 INDICES_FILE="$OUT_DIR/raw/selected_indices.txt"
 
-echo "\n2) Tiled inference (SAHI-style)"
+echo ""
+echo "2) Tiled inference (SAHI-style, same training parameters)"
 python3 Fine-tune/test_detection_vis.py \
   --data-dir "$DATA_DIR" \
   --ckpt "$CKPT" \
   --out "$OUT_DIR/tiles" \
   --num "$NUM" --num-vis "$NUM_VIS" --downsample-ratio "$DOWNSAMPLE" \
   --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
-  --min-score "$MIN_SCORE_TILE" --ap-dist-thresh 8.0 \
-  --max-dets "$MAX_DETS" --nms-radius "$NMS_RADIUS" --nms-kernel "$NMS_KERNEL" \
+  --min-score "$MIN_SCORE_TILE" --ap-dist-thresh "$AP_DIST_THRESH" \
+  --max-dets "$MAX_DETS" --nms-kernel "$NMS_KERNEL" \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  ${SCORE_THRESH_TILE:+--score-thresh "$SCORE_THRESH_TILE"} \
-  ${SOFT_NMS_SIGMA_TILE:+--soft-nms-sigma "$SOFT_NMS_SIGMA_TILE"} \
+  $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" ) \
+  $( [[ "$DET_USE_GN" -eq 1 ]] && echo "--det-use-gn" ) \
+  ${EVAL_NMS_RADIUS:+--eval-nms-radius "$EVAL_NMS_RADIUS"} \
+  ${EVAL_SOFT_NMS_SIGMA:+--eval-soft-nms-sigma "$EVAL_SOFT_NMS_SIGMA"} \
   --tile-size "$TILE_SIZE" --tile-overlap "$TILE_OVER" \
   --indices-file "$INDICES_FILE" \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 
-echo "\n3) Default visualization (moderate threshold + NMS)"
+echo ""
+echo "3) Experimental NMS test (same training parameters + optional post-NMS settings)"
 python3 Fine-tune/test_detection_vis.py \
   --data-dir "$DATA_DIR" \
   --ckpt "$CKPT" \
   --out "$OUT_DIR/orig" \
   --num "$NUM" --num-vis "$NUM_VIS" --downsample-ratio "$DOWNSAMPLE" \
   --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
-  --min-score "$SCORE_THRESH_ORIG" --ap-dist-thresh 8.0 \
-  --max-dets 200 --nms-radius "$NMS_RADIUS" --nms-kernel "$NMS_KERNEL" \
+  --min-score "$MIN_SCORE_ORIG" --ap-dist-thresh "$AP_DIST_THRESH" \
+  --max-dets "$MAX_DETS" --nms-kernel "$NMS_KERNEL" \
   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  ${SCORE_THRESH_ORIG:+--score-thresh "$SCORE_THRESH_ORIG"} \
-  ${SOFT_NMS_SIGMA_ORIG:+--soft-nms-sigma "$SOFT_NMS_SIGMA_ORIG"} \
+  $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" ) \
+  $( [[ "$DET_USE_GN" -eq 1 ]] && echo "--det-use-gn" ) \
   --indices-file "$INDICES_FILE" \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 
-echo "\nDiagnostics finished. Outputs in: $OUT_DIR"
-echo "  raw:   $OUT_DIR/raw"
-echo "  tiles: $OUT_DIR/tiles"
-echo "  orig:  $OUT_DIR/orig"
+echo ""
+echo "=== Evaluation Complete ==="
+echo "Results written to: $OUT_DIR"
+echo "  AP distance threshold: ${AP_DIST_THRESH}px (for TP/FP matching)"
+echo "  raw/     - Standard inference (matches training evaluation)"
+echo "  tiles/   - Tiled inference (SAHI-style)"
+echo "  orig/    - Inference with optional post-NMS (EVAL_NMS_RADIUS=$EVAL_NMS_RADIUS, EVAL_SOFT_NMS_SIGMA=$EVAL_SOFT_NMS_SIGMA)"
+echo ""
+echo "Each output directory contains:"
+echo "  - report.txt      : TP/FP/FN summary, AP/Precision/Recall/F1 metrics (using ${AP_DIST_THRESH}px threshold)"
+echo "  - scores.csv      : Per-prediction scores and TP/FP labels"
+echo "  - scores.png      : Histogram comparing TP vs FP score distribution"
+echo "  - *.jpg           : Sample visualizations with predictions overlay"
+echo ""
 
 exit 0

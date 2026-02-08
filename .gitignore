@@ -8,7 +8,11 @@ __pycache__
 .github
 .pytest_cache
 .tmp_posttrain
+.tmp_posttrain_phase6
+.tmp_posttrain_phase6_rgbt_cc
 checkpoints
 checkpoints_cc
+checkpoints_phase6
+checkpoints_phase6_rgbt_cc
 ckpt_verify
 teammates
