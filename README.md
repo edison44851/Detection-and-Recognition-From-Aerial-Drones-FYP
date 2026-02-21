@@ -369,7 +369,7 @@ This project uses two RGBT (RGB + Thermal) datasets for training and evaluation:
 
 ## Baseline Model Comparison (AP@15px)
 
-To provide fair comparison with external baseline models (Faster RCNN, RetinaNet, YOLOv26s), we evaluate Phase 6.5 at AP@15px (more lenient distance threshold matching standard detection evaluation protocols). For baseline comparison, detections are evaluated as 15px x 15px bounding boxes, and IoU >= 50% is counted as a hit.
+To provide fair comparison with external baseline models (Faster RCNN, RetinaNet, YOLO26s), we evaluate Phase 6.5 at AP@15px (more lenient distance threshold matching standard detection evaluation protocols). For baseline comparison, detections are evaluated as 15px x 15px bounding boxes, and IoU >= 50% is counted as a hit.
 
 ### Comparison Chart
 
@@ -382,21 +382,21 @@ To provide fair comparison with external baseline models (Faster RCNN, RetinaNet
 | **Phase 6.5 (Ours)** | **RGBT** | **0.7148** | **0.6481** | **0.8035** | **0.7175** | Multi-modal fusion |
 | Faster RCNN | RGB | 0.0156 | 0.0897 | 0.2969 | 0.1378 | Detectron2 baseline |
 | RetinaNet | RGB | 0.0133 | 0.0899 | 0.2974 | 0.1380 | Detectron2 baseline |
-| YOLOv26s | RGB | 0.0012 | 0.0579 | 0.5744 | 0.1056 | High recall, low precision |
+| YOLO26s | RGB | 0.0012 | 0.0579 | 0.5744 | 0.1056 | High recall, low precision |
 | Faster RCNN | Thermal | 0.0275 | 0.1382 | 0.4573 | 0.2123 | Better than RGB |
 | RetinaNet | Thermal | 0.0365 | 0.1558 | 0.5155 | 0.2393 | Best single-modal baseline |
-| YOLOv26s | Thermal | 0.0034 | 0.0853 | 0.8466 | 0.1551 | Highest recall, lowest precision |
+| YOLO26s | Thermal | 0.0034 | 0.0853 | 0.8466 | 0.1551 | Highest recall, lowest precision |
 
 ### Key Findings
 
 1. **Multi-modal Superiority**: Phase 6.5 (RGBT fusion) achieves 19.6× higher AP than the best single-modal baseline (RetinaNet Thermal)
 2. **Balanced Performance**: Our approach maintains both high precision (0.65) and recall (0.80), while baselines struggle with precision (<0.16)
 3. **Thermal > RGB**: All baseline models perform better on thermal imagery than RGB for aerial crowd detection
-4. **YOLO Trade-off**: YOLOv26s achieves highest recall (0.85 thermal) but suffers from extremely low precision (0.085), resulting in poor F1
+4. **YOLO Trade-off**: YOLO26s achieves highest recall (0.85 thermal) but suffers from extremely low precision (0.085), resulting in poor F1
 
 ### Visual Comparisons
 
-Below are example detections from baseline models on test images (AP@15px RAW mode evaluation). For Detectron2 models, green boxes are ground truths and other colors are predictions. For YOLOv26s, blue boxes are predictions with no ground truths shown. For our method, blue crosses are ground truths, red circles are false positives, and green circles are true positives.
+Below are example detections from baseline models on test images (AP@15px RAW mode evaluation). For Detectron2 models, green boxes are ground truths and other colors are predictions. For YOLO26s, blue boxes are predictions with no ground truths shown. For our method, blue crosses are ground truths, red circles are false positives, and green circles are true positives.
 
 #### Faster RCNN (Detectron2)
 | RGB Inference | Thermal Inference |
@@ -418,15 +418,15 @@ Below are example detections from baseline models on test images (AP@15px RAW mo
 
 *Note: RetinaNet achieves slightly better thermal performance (AP 0.0365) than Faster RCNN but still struggles with precision (~15-16%).*
 
-#### YOLOv26s
+#### YOLO26s
 | RGB Inference | Thermal Inference |
 |---------------|-------------------|
-| ![YOLOv2 RGB - Image 6](image/compare/yolov26s/6.jpg) | ![YOLOv2 Thermal - Image 6](image/compare/yolov26s/6R.jpg) |
-| ![YOLOv2 RGB - Image 30](image/compare/yolov26s/30.jpg) | ![YOLOv2 Thermal - Image 30](image/compare/yolov26s/30R.jpg) |
-| ![YOLOv2 RGB - Image 117](image/compare/yolov26s/117.jpg) | ![YOLOv2 Thermal - Image 117](image/compare/yolov26s/117R.jpg) |
-| ![YOLOv2 RGB - Image 1206](image/compare/yolov26s/1206.jpg) | ![YOLOv2 Thermal - Image 1206](image/compare/yolov26s/1206R.jpg) |
+| ![YOLOv2 RGB - Image 6](image/compare/YOLO26s/6.jpg) | ![YOLOv2 Thermal - Image 6](image/compare/YOLO26s/6R.jpg) |
+| ![YOLOv2 RGB - Image 30](image/compare/YOLO26s/30.jpg) | ![YOLOv2 Thermal - Image 30](image/compare/YOLO26s/30R.jpg) |
+| ![YOLOv2 RGB - Image 117](image/compare/YOLO26s/117.jpg) | ![YOLOv2 Thermal - Image 117](image/compare/YOLO26s/117R.jpg) |
+| ![YOLOv2 RGB - Image 1206](image/compare/YOLO26s/1206.jpg) | ![YOLOv2 Thermal - Image 1206](image/compare/YOLO26s/1206R.jpg) |
 
-*Note: YOLOv26s demonstrates the recall-precision trade-off: highest recall (85% thermal) but lowest precision (8.5%), resulting in massive false positive rates unsuitable for practical deployment.*
+*Note: YOLO26s demonstrates the recall-precision trade-off: highest recall (85% thermal) but lowest precision (8.5%), resulting in massive false positive rates unsuitable for practical deployment.*
 
 #### Phase 6.5 (Ours) - RGBT Fusion at AP@15px
 | RGBT Joint Inference |
