@@ -56,7 +56,7 @@ Density  = reg_layer(Features)  (3-layer conv stack → 1 channel)
 
 The triple-path Swin backbone processes RGB, thermal, and broker features independently with shared architecture, then combines them for counting and detection:
 
-![Swin Transformer Backbone - Triple Path](../image/FYP-Swin Backbone.png)
+![Swin Transformer Backbone - Triple Path](../image/FYP-Swin-Backbone.png)
 
 *Figure: Hierarchical Swin architecture applied to three input modalities. Each stream outputs 768-channel features at stride-8. Features are fused via elementwise addition.*
 
@@ -109,7 +109,7 @@ Inference: Max-pool NMS (kernel=3) → Extract local maxima → Detections
 
 Below is the detailed architecture of the detection head, showing the three parallel prediction branches (heatmap, size, offset):
 
-![CenterNet Detection Head](../image/FYP-Detection Head.png)
+![CenterNet Detection Head](../image/FYP-Detection-Head.png)
 
 *Figure: FPN output (256 channels) feeds parallel heads for heatmap (center location), size (box dimensions), and offset (sub-pixel refinement). Outputs are [B, 1, H, W], [B, 2, H, W], [B, 2, H, W] respectively.*
 
@@ -117,7 +117,7 @@ Below is the detailed architecture of the detection head, showing the three para
 
 When features from the Swin backbone need adaptation, the following module is applied:
 
-![Adaptor Module](../image/FYP_Detection Adapter.png)
+![Adaptor Module](../image/FYP-Detection-Adapter.png)
 
 *Figure: Adaptor transforms fused backbone features (768 channels) to detection head input (256 channels) via grouped normalization and learned transformation.*
 
