@@ -69,8 +69,6 @@ python3 Fine-tune/test_detection_vis.py \
   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
   $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" ) \
   $( [[ "$DET_USE_GN" -eq 1 ]] && echo "--det-use-gn" ) \
-  ${EVAL_NMS_RADIUS:+--eval-nms-radius "$EVAL_NMS_RADIUS"} \
-  ${EVAL_SOFT_NMS_SIGMA:+--eval-soft-nms-sigma "$EVAL_SOFT_NMS_SIGMA"} \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 INDICES_FILE="$OUT_DIR/raw/selected_indices.txt"
 

@@ -16,3 +16,5 @@ checkpoints_phase6
 checkpoints_phase6_rgbt_cc
 ckpt_verify
 teammates
+*.json
+*.txt
