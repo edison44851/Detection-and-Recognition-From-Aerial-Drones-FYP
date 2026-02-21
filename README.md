@@ -125,6 +125,9 @@ This project extends the **Free-Lunch multimodal counting** framework:
 - **Required files**: Pretrained backbone weights for Swin Transformer
 - Download and place in `checkpoints/` directory (weights are automatically loaded during training if backbone is frozen)
 
+Project checkpoints are hosted on Hugging Face:
+- **Hugging Face**: https://huggingface.co/Edison2525/Detection-and-Recognition-From-Aerial-Drones-FYP
+
 **Current best checkpoint** (Phase 6.5):
 - Located at: `checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth`
 - Use with `--resume` flag to fine-tune from this checkpoint
@@ -515,9 +518,7 @@ The 15px threshold better reflects practical deployment scenarios where exact pi
 
 This fork extends the Free-Lunch multimodal counting framework with keypoint detection capabilities for aerial RGBT imagery. Critical stability fixes and hyperparameter tuning contributed by project teammates.
 
-Original Free-Lunch repository: [link if available]
-
-Final year project (FYP) at [institution], 2025.
+Final year project (FYP) at City University of Hong Kong, 2026.
 
 ## Future Work
 
