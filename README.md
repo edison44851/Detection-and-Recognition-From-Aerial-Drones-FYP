@@ -85,7 +85,7 @@ cd FYP
 ### 2. Download Datasets
 
 #### DroneRGBT Dataset
-- **Source**: [DroneRGBT Official Repository](https://github.com/VisDrone/VisDrone-Dataset)
+- **Source**: [DroneRGBT Official Repository](https://github.com/VisDrone/DroneRGBT)
 - **Structure after download**:
   ```
   .data/DroneRGBT/
@@ -100,7 +100,7 @@ cd FYP
   ```
 
 #### RGBT-CC Dataset
-- **Source**: [RGBT-CC Official Repository](https://github.com/chen-liang-bit/RGBT-CC)
+- **Source**: [RGBT-CC Official Repository](https://github.com/chen-judge/RGBTCrowdCounting)
 - **Structure after download**:
   ```
   .data/RGBT-CC/
