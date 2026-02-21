@@ -61,6 +61,15 @@ The base of this project is built upon the CVPR2025 paper [Free Lunch Enhancemen
 - Citation & Acknowledgments
 - Future Work
 
+## Repository Layout
+
+- [baselines/](baselines/) — scripts for fine-tuning and evaluating baseline models.
+- [docs/](docs/) — markdown notes that record ideas and development phases.
+- [Fine-tune/](Fine-tune/) — main codebase adapted for the new CenterHead; originally inherited from the Free-Lunch repo but heavily refactored and modified.
+- [PPCA/](PPCA/) — inherited from the Free-Lunch repo with no local changes.
+- [image/](image/) — images used in markdown documentation.
+- [tools/](tools/) — standalone utilities; each script has its own usage and should be run independently.
+
 ## Current Status (2026-02-08)
 - **✅ Phase 6.5 Adopted**: Better Bias Initialization (-4.6→-2.0) - **KEPT despite lower RAW/TILES AP**
 - **Rationale**: Better TP confidence distribution (more balanced, not concentrated <50% quadrant) + significantly improved ORIG mode (+14.5% AP)
