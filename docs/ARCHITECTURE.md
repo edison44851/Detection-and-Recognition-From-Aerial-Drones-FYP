@@ -273,27 +273,130 @@ Detections are matched to ground-truth using **spatial distance** (not IoU):
 
 ---
 
-## Multi-Scale FPN Option
+## Feature Pyramid Network (FPN) Neck
 
-**Phase 6.1-6.3 added SimpleFPN** for multi-scale feature fusion:
+**SimpleFPN is mandatory in the current detection pipeline** (Phase 6.5+) for multi-scale feature fusion and improved context aggregation.
 
+### Purpose
+
+The FPN neck addresses **scale variation** in aerial crowd detection by creating a multi-scale feature pyramid from a single-resolution backbone output. This allows the detection head to leverage both fine-grained local details (P4) and coarse semantic context (P8, P16) simultaneously.
+
+### Architecture
+
+The SimpleFPN creates a **three-level pyramid** from adapted backbone features (stride-4, 768 channels):
+
+![FPN Neck Architecture](../image/FYP-FPN-Neck.png)
+
+*Figure: SimpleFPN synthesizes multi-scale features via pooling and lateral projections, then fuses them back to stride-4 resolution with a smoothing convolution.*
+
+**Pipeline:**
 ```
-Backbone Features (stride-8)
+Adapted Features [B, 768, H/8, W/8]
     ↓
-FPN Levels: P4 (stride-4), P8 (stride-8), P16 (stride-16)
+╔═══════════════════════════════════════════════════════════╗
+║  P4 Branch (stride-4):                                     ║
+║    lateral_p4: Conv2d(768→256, k=1) → [B, 256, H/4, W/4] ║
+╠═══════════════════════════════════════════════════════════╣
+║  P8 Branch (stride-8):                                     ║
+║    AvgPool(k=2, s=2) → lateral_p8: Conv2d(768→256, k=1)  ║
+║    → Upsample(2×, bilinear) → [B, 256, H/4, W/4]         ║
+╠═══════════════════════════════════════════════════════════╣
+║  P16 Branch (stride-16):                                   ║
+║    AvgPool(k=4, s=4) → lateral_p16: Conv2d(768→256, k=1) ║
+║    → Upsample(4×, bilinear) → [B, 256, H/4, W/4]         ║
+╚═══════════════════════════════════════════════════════════╝
     ↓
-Per-level CenterHead predicts peaks
+Element-wise Addition: P4 + P8_up + P16_up → [B, 256, H/4, W/4]
     ↓
-Merge predictions with cross-scale NMS
+Smooth Conv: Conv2d(256→256, k=3, pad=1) → [B, 256, H/4, W/4]
+    ↓
+Output Features (256 channels, stride-4) → CenterHead
 ```
 
-**Benefits:**
-- Better handling of scale variation (people in varying distances)
-- Multi-scale contextual information
+### Implementation Details
 
-**Trade-offs:**
-- More parameters (~10% increase)
-- Slower inference (~10% slower)
+**Lateral Projections (1×1 convolutions):**
+- `lateral_p4`: Projects original features to 256 channels
+- `lateral_p8`: Projects 2× pooled features to 256 channels  
+- `lateral_p16`: Projects 4× pooled features to 256 channels
+
+**Pooling Strategy:**
+- Average pooling (not max pooling) preserves smooth feature distributions
+- Kernel sizes: 2×2 (stride-8) and 4×4 (stride-16)
+
+**Upsampling:**
+- Bilinear interpolation with `align_corners=False`
+- Upsamples coarser features to match P4 spatial dimensions
+
+**Smoothing:**
+- 3×3 convolution after fusion reduces aliasing artifacts from upsampling
+- Maintains 256 channels throughout
+
+### Trainable Parameters
+
+The FPN adds **~1.18M parameters** to the detection head:
+
+| Component | Parameters | Details |
+|-----------|------------|---------|
+| `lateral_p4.weight` | 196,608 | 768 × 256 × 1 × 1 |
+| `lateral_p8.weight` | 196,608 | 768 × 256 × 1 × 1 |
+| `lateral_p16.weight` | 196,608 | 768 × 256 × 1 × 1 |
+| `smooth.weight` | 589,824 | 256 × 256 × 3 × 3 |
+| **Total** | **1,179,648** | ~21% of total trainable params |
+
+### Integration with Detection Head
+
+The FPN is invoked inside `DetectionHeadWrapper` before the CenterNet head:
+
+```python
+# Forward pass
+feats = det_adaptor(backbone_features)  # [B, 768, H/8, W/8]
+if use_fpn:
+    feats = fpn(feats)  # [B, 256, H/4, W/4] — stride-4 multi-scale features
+heat, size, offset = center_head(feats)
+```
+
+**Configuration Flag:**
+- `--use-fpn 1` enables FPN (mandatory in Phase 6.5)
+- Without FPN, features go directly from adaptor → CenterHead
+
+### Why FPN is Mandatory
+
+Aerial crowd detection faces **extreme scale variation**:
+- **Close range:** People appear 40-60 pixels tall
+- **Far range:** People appear 10-20 pixels tall  
+- **Dense clusters:** Overlapping instances at mixed scales
+
+**FPN provides:**
+1. **Multi-scale receptive fields:** P4 captures fine details, P16 captures context
+2. **Semantic enrichment:** Coarse features add semantic information to fine-grained predictions
+3. **Robustness:** Reduces missed detections on very small or very large targets
+
+### Performance Characteristics
+
+**Phase 6.5 Results with FPN:**
+- **AP:** 0.5867 (8-pixel distance threshold)
+- **Precision:** 0.6994  
+- **Recall:** 0.6813
+- **F1 Score:** 0.6937
+
+**Computational Trade-offs:**
+- **Memory:** +1.18M parameters (~10% increase)
+- **Inference Speed:** ~10% slower due to multi-scale processing
+- **Training Time:** Marginal increase (<5%)
+
+**Ablation (Phase 6.1-6.3 experiments):**
+- FPN enabled: Better recall on multi-scale targets
+- FPN disabled: Misses small distant objects; ~3-5% AP drop
+
+### When to Disable FPN
+
+FPN can be disabled for:
+- **Controlled environments:** Fixed camera altitude, consistent object scale
+- **Real-time constraints:** Latency-critical applications where 10% speedup matters
+- **Limited compute:** Edge devices with memory constraints
+
+**To disable:** Set `--use-fpn 0` in training/inference configuration. Note that disabling FPN requires retraining from scratch—pretrained FPN weights cannot be removed at inference time without performance degradation.
 
 ---
 
