@@ -29,12 +29,13 @@ def parse_args():
     p.add_argument("--source", default=None, help="override source directory or file for inference")
     p.add_argument("--device", default=None, help="device id or cpu")
     p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--conf", type=float, default=0.0, help="model confidence threshold for predictions")
+    p.add_argument("--conf", type=float, default=0.1, help="model confidence threshold for predictions")
     p.add_argument("--vis-thres", type=float, default=None, help="visualization threshold (overrides --conf for drawing)")
     p.add_argument("--max-boxes", type=int, default=None, help="maximum boxes to draw per image (top by score)")
     p.add_argument("--hide-labels", action="store_true", help="do not draw text labels on images")
     p.add_argument("--box-thickness", type=int, default=2, help="box line thickness for drawn boxes")
-    p.add_argument("--iou", type=float, default=0.50)
+    p.add_argument("--iou", type=float, default=0.1429)
+    p.add_argument("--nms-thres", type=float, default=0.15, help="optional extra NMS IoU threshold to apply before eval/vis")
     p.add_argument("--output", default="../runs/infer", help="output project directory (relative to script)")
     p.add_argument("--name", default="predict", help="run name inside output")
     p.add_argument("--save_txt", action="store_true", help="save prediction .txt files")
@@ -270,6 +271,24 @@ def main(args):
             return 0.0
         return inter_area / union
 
+    def nms_preds(pred_list, iou_thresh):
+        if not pred_list:
+            return []
+        if iou_thresh is None:
+            return pred_list
+        # sort by score desc
+        preds_sorted = sorted(pred_list, key=lambda x: x[4], reverse=True)
+        keep = []
+        while preds_sorted:
+            best = preds_sorted.pop(0)
+            keep.append(best)
+            remaining = []
+            for p in preds_sorted:
+                if iou(best[0:4], p[0:4]) <= iou_thresh:
+                    remaining.append(p)
+            preds_sorted = remaining
+        return keep
+
     failures = 0
     for i, img in enumerate(img_list, start=1):
         try:
@@ -298,6 +317,9 @@ def main(args):
                 gts = load_yolo_labels(Path(label_path), img_w, img_h)
             total_gts += len(gts)
 
+            # apply optional extra NMS before evaluation/visualization
+            preds = nms_preds(preds, args.nms_thres)
+
             # match predictions to gts using greedy by score
             preds_sorted = sorted(preds, key=lambda x: x[4], reverse=True)
             matched_gt = set()
@@ -315,7 +337,7 @@ def main(args):
                     if cur_iou > best_iou:
                         best_iou = cur_iou
                         best_j = j
-                if best_iou >= 0.5 and best_j >= 0:
+                if best_iou >= 0.15 and best_j >= 0:
                     # true positive
                     all_scores.append(score)
                     all_matches.append(1)
@@ -339,8 +361,33 @@ def main(args):
                     font = ImageFont.load_default()
                 except Exception:
                     font = None
+                # Draw GT boxes in blue
+                for gt in gts:
+                    gx1, gy1, gx2, gy2, gcls = gt
+                    gt_color = (0, 0, 255)
+                    draw.rectangle([gx1, gy1, gx2, gy2], outline=gt_color, width=args.box_thickness)
+                    if not args.hide_labels:
+                        gt_label = f"GT {class_names.get(gcls, 'cls'+str(gcls))}"
+                        try:
+                            text_w, text_h = draw.textsize(gt_label, font=font)
+                        except Exception:
+                            text_w, text_h = (len(gt_label) * 6, 10)
+                        draw.rectangle([gx1, gy1 - text_h - 4, gx1 + text_w + 4, gy1], fill=gt_color)
+                        draw.text((gx1 + 2, gy1 - text_h - 2), gt_label, fill=(255, 255, 255), font=font)
+
                 for (x1, y1, x2, y2, score, cls) in vis_preds:
-                    color = (0, 120, 255)
+                    # color by IoU >= 0.5 (TP green / FP red)
+                    best_iou = 0.0
+                    for gt in gts:
+                        if gt[4] != cls:
+                            continue
+                        cur_iou = iou((x1, y1, x2, y2), gt[0:4])
+                        if cur_iou > best_iou:
+                            best_iou = cur_iou
+                    if best_iou >= 0.15:
+                        color = (0, 255, 0)
+                    else:
+                        color = (255, 0, 0)
                     draw.rectangle([x1, y1, x2, y2], outline=color, width=args.box_thickness)
                     if not args.hide_labels:
                         label = f"{class_names.get(cls, 'cls'+str(cls))} {score:.2f}"
@@ -348,8 +395,7 @@ def main(args):
                             text_w, text_h = draw.textsize(label, font=font)
                         except Exception:
                             text_w, text_h = (len(label) * 6, 10)
-                        text_bg = (0, 120, 255)
-                        draw.rectangle([x1, y1 - text_h - 4, x1 + text_w + 4, y1], fill=text_bg)
+                        draw.rectangle([x1, y1 - text_h - 4, x1 + text_w + 4, y1], fill=color)
                         draw.text((x1 + 2, y1 - text_h - 2), label, fill=(255, 255, 255), font=font)
                 out_path = target_dir / Path(img).name
                 im.save(out_path)

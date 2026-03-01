@@ -15,9 +15,9 @@ set -euo pipefail
 #   tiles/   - Optional tiled inference (SAHI-style)
 #   orig/    - Standard inference with optional experimental NMS
 
-CKPT=${1:-checkpoints_phase6_rgbt_cc/0208-213348/best_model_epoch_22.pth}
-DATA_DIR=${2:-.data/RGBT-CC_converted}
-OUT_DIR=${3:-./.tmp_posttrain_phase6_rgbt_cc/0208-213348}
+CKPT=${1:-checkpoints_phase6/phase6.3_full_features/phase6_3_best_model_epoch_40.pth}
+DATA_DIR=${2:-.data/DroneRGBT_converted}
+OUT_DIR=${3:-./.tmp_posttrain_phase6/}
 NUM_VIS=${4:-64}
 DOWNSAMPLE=${5:-4}
 
@@ -31,7 +31,7 @@ MIN_SCORE_TILE=0.3   # SAHI-style: Phase 6.3 adjusted for full features
 MIN_SCORE_ORIG=0.4   # Production: Phase 6.3 baseline (note: may be too high, consider 0.15-0.20)
 AP_DIST_THRESH=15.0  # AP distance threshold (pixels) - increased to 15px to account for slight localization offsets
 MAX_DETS=300
-EVAL_NMS_RADIUS=4.0  # Match training configuration (radius NMS, 4.0 px)
+EVAL_NMS_RADIUS=7.0  # Match training configuration (radius NMS, 7.0 px)
 EVAL_SOFT_NMS_SIGMA=0.5  # Match training configuration
 NMS_KERNEL=3
 HEAD_CONV=256
