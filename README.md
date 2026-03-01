@@ -475,10 +475,10 @@ Below are example detections from baseline models on test images (AP@15px RAW mo
 #### YOLO26s
 | RGB Inference | Thermal Inference |
 |---------------|-------------------|
-| ![YOLOv2 RGB - Image 6](image/compare/YOLO26s/6.jpg) | ![YOLOv2 Thermal - Image 6](image/compare/YOLO26s/6R.jpg) |
-| ![YOLOv2 RGB - Image 30](image/compare/YOLO26s/30.jpg) | ![YOLOv2 Thermal - Image 30](image/compare/YOLO26s/30R.jpg) |
-| ![YOLOv2 RGB - Image 117](image/compare/YOLO26s/117.jpg) | ![YOLOv2 Thermal - Image 117](image/compare/YOLO26s/117R.jpg) |
-| ![YOLOv2 RGB - Image 1206](image/compare/YOLO26s/1206.jpg) | ![YOLOv2 Thermal - Image 1206](image/compare/YOLO26s/1206R.jpg) |
+| ![YOLOv2 RGB - Image 6](image/compare/yolov26s/6.jpg) | ![YOLOv2 Thermal - Image 6](image/compare/yolov26/6R.jpg) |
+| ![YOLOv2 RGB - Image 30](image/compare/yolov26s/30.jpg) | ![YOLOv2 Thermal - Image 30](image/compare/yolov26/30R.jpg) |
+| ![YOLOv2 RGB - Image 117](image/compare/yolov26s/117.jpg) | ![YOLOv2 Thermal - Image 117](image/compare/yolov26/117R.jpg) |
+| ![YOLOv2 RGB - Image 1206](image/compare/yolov26s/1206.jpg) | ![YOLOv2 Thermal - Image 1206](image/compare/yolov26/1206R.jpg) |
 
 *Note: YOLO26s Thermal emerges as the best single-modal baseline (AP@8px 0.6210), achieving high recall (81%) with reasonable precision (67%). However, Phase 6.3's RGBT fusion still surpasses it by 13% AP, demonstrating multi-modal advantages.*
 
