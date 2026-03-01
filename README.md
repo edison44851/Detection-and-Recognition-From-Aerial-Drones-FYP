@@ -385,14 +385,14 @@ IoU threshold calculation for 16x16 boxes (center offset d):
 - Intersection area = (16 - d)^2
 - Union area = 2 * 16^2 - (16 - d)^2
 - IoU(d) = (16 - d)^2 / (512 - (16 - d)^2)
-- Solve IoU(d) = 0.1429:
-  (16 - d)^2 / (512 - (16 - d)^2) = 0.1429
-  (16 - d)^2 = 0.1429 * (512 - (16 - d)^2)
-  (16 - d)^2 = 73.1648 - 0.1429 * (16 - d)^2
-  1.1429 * (16 - d)^2 = 73.1648
-  (16 - d)^2 = 64
-  16 - d = 8
-  d = 8 px (per-axis center offset)
+- Solve IoU(d) = 0.1429: \
+  (16 - d)^2 / (512 - (16 - d)^2) = 0.1429 \
+  (16 - d)^2 = 0.1429 * (512 - (16 - d)^2) \
+  (16 - d)^2 = 73.1648 - 0.1429 * (16 - d)^2 \
+  1.1429 * (16 - d)^2 = 73.1648 \
+  (16 - d)^2 = 64 \
+  16 - d = 8 \
+  d = 8 px (per-axis center offset) \
 
 **Why 16x16 boxes?** This is small object detection with typical object sizes of 8-20px pixels (see [LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md)). A small adjustment from 15x15 to 16x16 keeps boxes realistic while aligning IoU matching with AP@8px distance tolerance.
 
