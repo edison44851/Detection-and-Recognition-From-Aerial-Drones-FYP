@@ -201,7 +201,7 @@ def setup_cfg(output_dir, train_dataset, num_classes=1,
     cfg.SOLVER.STEPS = (s1, s2)
     # Early stopping defaults (can be tuned)
     cfg.SOLVER.EARLY_STOP_PATIENCE = 5
-    cfg.SOLVER.EARLY_STOP_METRIC = "bbox/AP50"
+    cfg.SOLVER.EARLY_STOP_METRIC = "custom_f1"
     cfg.SOLVER.EARLY_STOP_MAXIMIZE = True
 
     # Input
@@ -324,7 +324,7 @@ class EarlyStoppingHook(HookBase):
 
 
 def main(coco_root_dir="./coco_droneRGBT", modality="rgb", num_epochs=30, base_lr=0.001, batch_size=4,
-         early_stop_patience=5, early_stop_metric="bbox/AP50", early_stop_maximize=True):
+         early_stop_patience=5, early_stop_metric="custom_f1", early_stop_maximize=True):
     """
     Main training function.
 
@@ -400,7 +400,7 @@ if __name__ == "__main__":
                         help="Root directory of COCO format dataset")
     parser.add_argument("--modality", type=str, choices=["rgb", "thermal"], default="rgb",
                         help="Which modality to train on (rgb or thermal)")
-    parser.add_argument("--epochs", type=int, default=30,
+    parser.add_argument("--epochs", type=int, default=100,
                         help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=0.001,
                         help="Base learning rate")
@@ -408,10 +408,10 @@ if __name__ == "__main__":
                         help="Training batch size (reduce if GPU memory is limited)")
     parser.add_argument("--early_stop_patience", type=int, default=10,
                         help="Early-stop patience (how many eval steps of no improvement before stopping)")
-    parser.add_argument("--early_stop_metric", type=str, default="bbox/AP50",
-                        help="Metric key to monitor for early stopping (e.g. 'bbox/AP50' or 'total_loss')")
+    parser.add_argument("--early_stop_metric", type=str, default="custom_f1",
+                        help="Metric key to monitor for early stopping (e.g. 'custom_f1', 'bbox/AP50' or 'total_loss')")
     parser.add_argument("--early_stop_maximize", action=argparse.BooleanOptionalAction, default=True,
-                        help="Whether higher metric is better (True for AP, False for loss)")
+                        help="Whether higher metric is better")
 
     args = parser.parse_args()
 

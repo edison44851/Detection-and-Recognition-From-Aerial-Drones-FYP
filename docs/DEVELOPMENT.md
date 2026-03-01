@@ -15,15 +15,16 @@ This document consolidates the experimental phases showing how the detection arc
 | **Phase 2** | Deeper heads (256ch), stride-4 | ~0.48 | 59% | 56% | ✅ Working | `1205-155221` |
 | **Phase 3** | + SimpleFPN + Keypoint mode | ~0.42 | 54% | 58% | ⚠️ Mixed | `1209-205427` |
 | **Phase 4** | + Teammate features (DISABLED) | ~0.46 | 53% | 55% | ❌ Issues | `1213-090950` |
-| **Phase 5** | Fresh Phase 6 baseline | ~0.23 | N/A | N/A | ⚠️ Transition | `Phase6_baseline` |
-| **Phase 6.1** | Sharper Gaussians (σ=0.8) | +101% | N/A | N/A | ✅ | `phase6.1_sigma0.8` |
-| **Phase 6.2** | Stronger loss signals | ~0.54 | N/A | N/A | ✅ | `phase6.2_stronger` |
-| **Phase 6.3** | Full features (r+t+b) | **0.59** | N/A | N/A | ✅ Historical | `phase6.3_full_features` |
-| **Phase 6.4** | Better adaptor (FAILED) | **0.015** | N/A | N/A | ❌ Reverted | `phase6.4` |
-| **Phase 6.5** | Better bias init (-2.0) | **0.56** | N/A | N/A | ✅ **CURRENT** | `phase6.5_better_bias` |
+| **Phase 6.1** | Sharper Gaussians (σ=0.8) | +101% | 66.3% | 38.2% | ✅ | `phase6.1_sigma0.8` |
+| **Phase 6.2** | Stronger loss signals | ~0.54 | 69.6% | 44.1% | ✅ | `phase6.2_stronger` |
+| **Phase 6.3** | Full features (r+t+b) | **0.59** | 70.1% | 56.4% | ✅ Historical | `phase6.3_full_features` |
+| **Phase 6.4** | Better adaptor (FAILED) | **0.015** | 18.0% | 2.7% | ❌ Reverted | `phase6.4` |
+| **Phase 6.5** | Better bias init (-2.0) | **0.56** | 69.9% | 56.4% | ✅ **CURRENT** | `phase6.5_better_bias` |
 
 **Legend:**
 - AP (RAW): Detection AP without NMS (full image)
+- AP@8px in this development log (phase model-selection runs): computed with simple trapezoidal integration (`np.trapz`) on the raw PR curve for fast iteration.
+- Note: trapz-based AP here reflects historical model-selection workflow; baseline-comparison AP values in `README.md` use all-point interpolation.
 - Status: ✅ Success, ⚠️ Mixed/Transition, ❌ Issues/Failure
 - **CURRENT:** Phase 6.5 is the recommended checkpoint
 

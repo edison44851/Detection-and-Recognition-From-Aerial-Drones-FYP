@@ -151,7 +151,41 @@ def evaluate_model(cfg, dataset_name, output_dir):
     return results
 
 
-def compute_custom_metrics(cfg, dataset_dicts):
+def nms_numpy(boxes, scores, iou_threshold=0.5):
+    """Apply Non-Maximum Suppression (NMS) on boxes (numpy)."""
+    if len(boxes) == 0:
+        return np.array([], dtype=np.int64)
+
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+
+    areas = (x2 - x1) * (y2 - y1)
+    order = scores.argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        iou = inter / (areas[i] + areas[order[1:]] - inter)
+
+        inds = np.where(iou <= iou_threshold)[0]
+        order = order[inds + 1]
+
+    return np.array(keep, dtype=np.int64)
+
+
+def compute_custom_metrics(cfg, dataset_dicts, nms_threshold=None):
     """Compute additional custom metrics."""
     predictor = DefaultPredictor(cfg)
 
@@ -166,7 +200,7 @@ def compute_custom_metrics(cfg, dataset_dicts):
     gt_map = {}  # image_id -> list of gt boxes
 
     print("\nComputing custom metrics...")
-    iou_threshold = 0.5
+    iou_threshold = 0.15
 
     # Debug counters
     total_images = 0
@@ -188,6 +222,11 @@ def compute_custom_metrics(cfg, dataset_dicts):
         outputs = predictor(img)
         pred_boxes = outputs["instances"].pred_boxes.tensor.cpu().numpy()
         pred_scores = outputs["instances"].scores.cpu().numpy()
+
+        if nms_threshold is not None and len(pred_boxes) > 0:
+            keep = nms_numpy(pred_boxes, pred_scores, iou_threshold=nms_threshold)
+            pred_boxes = pred_boxes[keep]
+            pred_scores = pred_scores[keep]
 
         if len(pred_boxes) > 0:
             images_with_pred += 1
@@ -424,7 +463,7 @@ def save_metrics_report(coco_results, custom_metrics, output_path):
     print(f"OK Metrics report saved to: {output_path}")
 
 
-def save_inference_visualizations(cfg, dataset_dicts, output_dir, num_images=10, random_seed=42):
+def save_inference_visualizations(cfg, dataset_dicts, output_dir, num_images=10, random_seed=42, nms_threshold=None):
     """
     Save visualization of inference results on sample images.
 
@@ -434,6 +473,7 @@ def save_inference_visualizations(cfg, dataset_dicts, output_dir, num_images=10,
         output_dir: Directory to save visualizations
         num_images: Number of images to visualize
         random_seed: Random seed for reproducibility
+        nms_threshold: Optional NMS IoU threshold to apply before visualization
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -472,22 +512,70 @@ def save_inference_visualizations(cfg, dataset_dicts, output_dir, num_images=10,
         output_path = os.path.join(output_dir, f"{image_name}_pred.jpg")
         cv2.imwrite(output_path, vis_img)
 
-        # Also create a side-by-side comparison with ground truth (if available)
+        # Always create a comparison with ground truth and predictions
+        img_with_gt = img.copy()
+        
+        # Draw ground truth boxes if available
+        gt_boxes = []
         if record.get("annotations"):
-            # Draw ground truth on original image
-            img_with_gt = img.copy()
             for ann in record["annotations"]:
                 x1, y1, x2, y2 = [int(v) for v in ann["bbox"]]
-                cv2.rectangle(img_with_gt, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green for GT
-                cv2.putText(img_with_gt, "GT", (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                cv2.rectangle(img_with_gt, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Blue for GT
+                cv2.putText(img_with_gt, "GT", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 0), 1)
+            gt_boxes = np.array([ann["bbox"] for ann in record["annotations"]])
+        else:
+            gt_boxes = np.array([])
+        
+        # Draw predictions on the image with IoU-based coloring
+        pred_instances = outputs["instances"].to("cpu")
+        pred_boxes = pred_instances.pred_boxes.tensor.numpy()
+        pred_scores = pred_instances.scores.numpy()
 
-            # Draw predictions on the GT image
-            v_gt = Visualizer(img_with_gt[:, :, ::-1], metadata=metadata, scale=1.2)
-            v_gt = v_gt.draw_instance_predictions(outputs["instances"].to("cpu"))
-            combined_img = v_gt.get_image()[:, :, ::-1]
+        # Apply optional NMS before visualization
+        if nms_threshold is not None and len(pred_boxes) > 0:
+            keep = nms_numpy(pred_boxes, pred_scores, iou_threshold=nms_threshold)
+            pred_boxes = pred_boxes[keep]
+            pred_scores = pred_scores[keep]
 
-            combined_path = os.path.join(output_dir, f"{image_name}_comparison.jpg")
-            cv2.imwrite(combined_path, combined_img)
+        def compute_iou(box_a, box_b):
+            ax1, ay1, ax2, ay2 = box_a
+            bx1, by1, bx2, by2 = box_b
+            inter_x_min = max(ax1, bx1)
+            inter_y_min = max(ay1, by1)
+            inter_x_max = min(ax2, bx2)
+            inter_y_max = min(ay2, by2)
+            if inter_x_max >= inter_x_min and inter_y_max >= inter_y_min:
+                inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+            else:
+                inter_area = 0
+            a_area = (ax2 - ax1) * (ay2 - ay1)
+            b_area = (bx2 - bx1) * (by2 - by1)
+            union = a_area + b_area - inter_area
+            return inter_area / union if union > 0 else 0
+
+        for idx_pred, pred_box in enumerate(pred_boxes):
+            best_iou = 0
+            for gt_box in gt_boxes:
+                iou = compute_iou(pred_box, gt_box)
+                if iou > best_iou:
+                    best_iou = iou
+
+            if best_iou >= 0.15:
+                color = (0, 255, 0)  # Green for TP
+            else:
+                color = (0, 0, 255)  # Red for FP
+
+            x1, y1, x2, y2 = [int(v) for v in pred_box]
+            cv2.rectangle(img_with_gt, (x1, y1), (x2, y2), color, 2)
+            # Only show the score value
+            label = f"{pred_scores[idx_pred]:.2f}"
+            # Place text below the box to avoid overlap
+            text_y = min(y2 + 12, img_with_gt.shape[0] - 5)
+            cv2.putText(img_with_gt, label, (x1, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+
+        combined_img = img_with_gt
+        combined_path = os.path.join(output_dir, f"{image_name}_comparison.jpg")
+        cv2.imwrite(combined_path, combined_img)
 
         print(f"  OK {sample_idx + 1}/{num_to_sample}: {image_name}")
 
@@ -495,7 +583,7 @@ def save_inference_visualizations(cfg, dataset_dicts, output_dir, num_images=10,
 
 
 def main(coco_root_dir="./coco_droneRGBT", modality="rgb", checkpoint_path=None, score_threshold=0.5,
-         num_viz_images=10, random_seed=42, save_viz=False):
+         num_viz_images=10, random_seed=42, save_viz=False, nms_threshold=None):
     """
     Main evaluation function.
 
@@ -542,7 +630,7 @@ def main(coco_root_dir="./coco_droneRGBT", modality="rgb", checkpoint_path=None,
     coco_results = evaluate_model(cfg, dataset_name, eval_output_dir)
 
     # Compute custom metrics
-    custom_metrics = compute_custom_metrics(cfg, test_dataset)
+    custom_metrics = compute_custom_metrics(cfg, test_dataset, nms_threshold=nms_threshold)
 
     # Print report
     print_metrics_report(coco_results, custom_metrics)
@@ -554,7 +642,7 @@ def main(coco_root_dir="./coco_droneRGBT", modality="rgb", checkpoint_path=None,
     if save_viz:
         print("\n4. Saving inference visualizations...")
         viz_output_dir = f"./inference_visualizations_{modality}"
-        save_inference_visualizations(cfg, test_dataset, viz_output_dir, num_viz_images, random_seed)
+        save_inference_visualizations(cfg, test_dataset, viz_output_dir, num_viz_images, random_seed, nms_threshold)
 
 
 if __name__ == "__main__":
@@ -565,8 +653,10 @@ if __name__ == "__main__":
                         help="Which modality to evaluate (rgb or thermal)")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to model checkpoint (auto-generated if not provided)")
-    parser.add_argument("--score_threshold", type=float, default=0.0,
-                        help="Score threshold for detections (default: 0.5)")
+    parser.add_argument("--score_threshold", type=float, default=0.1429,
+                        help="Score threshold for detections (default: 0.1429)")
+    parser.add_argument("--nms_threshold", type=float, default=0.15,
+                        help="Optional NMS IoU threshold for custom metrics (e.g., 0.15)")
     parser.add_argument("--save_viz", action="store_true",
                         help="Save inference visualizations")
     parser.add_argument("--num_images", type=int, default=10,
@@ -583,5 +673,6 @@ if __name__ == "__main__":
         score_threshold=args.score_threshold,
         num_viz_images=args.num_images,
         random_seed=args.vis_seed,
-        save_viz=args.save_viz
+        save_viz=args.save_viz,
+        nms_threshold=args.nms_threshold
     )
