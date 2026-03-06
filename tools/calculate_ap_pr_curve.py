@@ -185,7 +185,8 @@ def plot_pr_curve(results_dict, output_path, title="Precision-Recall Curve"):
     
     for idx, (name, results) in enumerate(results_dict.items()):
         color = colors[idx % len(colors)]
-        label = f"{name} (AP={results['ap']:.4f})"
+        auc_value = results['ap']  # AUC = Area Under PR Curve
+        label = f"{name} (AUC={auc_value:.4f})"
         plt.plot(results['recall'], results['precision'], 
                 linewidth=2, label=label, color=color)
     

@@ -34,7 +34,7 @@ def parse_args():
     p.add_argument("--max-boxes", type=int, default=None, help="maximum boxes to draw per image (top by score)")
     p.add_argument("--hide-labels", action="store_true", help="do not draw text labels on images")
     p.add_argument("--box-thickness", type=int, default=2, help="box line thickness for drawn boxes")
-    p.add_argument("--iou", type=float, default=0.1429)
+    p.add_argument("--iou", type=float, default=0.2641)
     p.add_argument("--nms-thres", type=float, default=0.15, help="optional extra NMS IoU threshold to apply before eval/vis")
     p.add_argument("--output", default="../runs/infer", help="output project directory (relative to script)")
     p.add_argument("--name", default="predict", help="run name inside output")
@@ -366,14 +366,6 @@ def main(args):
                     gx1, gy1, gx2, gy2, gcls = gt
                     gt_color = (0, 0, 255)
                     draw.rectangle([gx1, gy1, gx2, gy2], outline=gt_color, width=args.box_thickness)
-                    if not args.hide_labels:
-                        gt_label = f"GT {class_names.get(gcls, 'cls'+str(gcls))}"
-                        try:
-                            text_w, text_h = draw.textsize(gt_label, font=font)
-                        except Exception:
-                            text_w, text_h = (len(gt_label) * 6, 10)
-                        draw.rectangle([gx1, gy1 - text_h - 4, gx1 + text_w + 4, gy1], fill=gt_color)
-                        draw.text((gx1 + 2, gy1 - text_h - 2), gt_label, fill=(255, 255, 255), font=font)
 
                 for (x1, y1, x2, y2, score, cls) in vis_preds:
                     # color by IoU >= 0.5 (TP green / FP red)
@@ -390,7 +382,7 @@ def main(args):
                         color = (255, 0, 0)
                     draw.rectangle([x1, y1, x2, y2], outline=color, width=args.box_thickness)
                     if not args.hide_labels:
-                        label = f"{class_names.get(cls, 'cls'+str(cls))} {score:.2f}"
+                        label = f"{score:.2f}"
                         try:
                             text_w, text_h = draw.textsize(label, font=font)
                         except Exception:
