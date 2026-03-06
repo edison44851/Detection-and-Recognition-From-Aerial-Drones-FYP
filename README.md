@@ -370,7 +370,7 @@ This project uses two RGBT (RGB + Thermal) datasets for training and evaluation:
 
 ## Baseline Model Comparison (AP@8px)
 
-To provide fair comparison with external baseline models (Faster RCNN, RetinaNet, YOLO26s), we evaluate Phase 6.3 at AP@8px (stricter distance threshold aligned with internal evaluation). For baseline comparison, detections are evaluated as 16px x 16px bounding boxes, and IoU >= 0.1429 is counted as a hit.
+To provide fair comparison with external baseline models (Faster RCNN, RetinaNet, YOLO26s), we evaluate Phase 6.3 at AP@8px (stricter distance threshold aligned with internal evaluation). For baseline comparison, detections are evaluated as 16px x 16px bounding boxes, and IoU >= 0.2641 is counted as a hit.
 
 **AP computation in this section:** all AP@8px values are computed from PR curves using all-point interpolation (precision-envelope integration) for cross-model consistency.
 
@@ -380,19 +380,24 @@ Inference settings:
 - **Phase 6.3 (default)**: 3×3 max-pooling NMS (~4-8 pixel suppression)
 - **Phase 6.3 (fair comparison)**: Radius NMS = 7.0 (comparable to baseline suppression range)
 
-IoU threshold calculation for 16x16 boxes (center offset d):
-- Overlap width = (16 - d) for 0 <= d <= 16
-- Intersection area = (16 - d)^2
-- Union area = 2 * 16^2 - (16 - d)^2
-- IoU(d) = (16 - d)^2 / (512 - (16 - d)^2)
-- Solve IoU(d) = 0.1429: \
-  (16 - d)^2 / (512 - (16 - d)^2) = 0.1429 \
-  (16 - d)^2 = 0.1429 * (512 - (16 - d)^2) \
-  (16 - d)^2 = 73.1648 - 0.1429 * (16 - d)^2 \
-  1.1429 * (16 - d)^2 = 73.1648 \
-  (16 - d)^2 = 64 \
-  16 - d = 8 \
-  d = 8 px (per-axis center offset) \
+IoU threshold calculation for 16x16 boxes with 8px Euclidean center-distance target:
+- Let center offset be `(dx, dy)` with `sqrt(dx^2 + dy^2) = 8`.
+- Use isotropic offset (`dx = dy = 8 / sqrt(2) = 5.657`) to convert radial tolerance to box overlap.
+- Overlap width/height: `16 - 5.657 = 10.343`.
+- Intersection area: `I = 10.343^2 = 106.98`.
+- Union area: `U = 2 * 16^2 - I = 512 - 106.98 = 405.02`.
+- IoU: `I / U = 106.98 / 405.02 = 0.2641`.
+
+Hence, for 16x16 boxes, IoU `0.2641` is used as the box-based equivalent of an 8px Euclidean center-distance target under the isotropic-offset assumption.
+
+**NMS threshold calculation for 16x16 boxes with isotropic offset:**
+- Given IoU = 0.15, find Euclidean center-distance using isotropic offset (same method as AP@8px).
+- IoU = I / (512 - I) where I = (16 - dx)^2 (dx = per-axis center distance).
+- 0.15 = I / (512 - I) → 0.15 × (512 - I) = I → 76.8 = 1.15 × I → I = 66.78.
+- (16 - dx)^2 = 66.78 → 16 - dx = √66.78 = 8.172 → dx = 7.828.
+- Euclidean distance d = dx × √2 = 7.828 × 1.414 ≈ 11.07 pixels.
+
+Therefore, baseline NMS with IoU = 0.15 suppresses overlapping detections with centers ~11.07px apart (Euclidean), which is more lenient than the AP@8px matching threshold (IoU = 0.2641).
 
 **Why 16x16 boxes?** This is small object detection with typical object sizes of 8-20px pixels (see [LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md)). A small adjustment from 15x15 to 16x16 keeps boxes realistic while aligning IoU matching with AP@8px distance tolerance.
 
@@ -432,20 +437,20 @@ The script automatically detects input format (JSON vs CSV) and computes AP usin
 | Model | Modality | AP@8px | Precision | Recall | F1 | Notes |
 |-------|----------|--------|-----------|--------|-----|-------|
 | **Phase 6.3 (NMS r=7)** | **RGBT** | **0.7018** | **0.7868** | 0.7204 | **0.7521** | Comparable NMS to baselines |
-| Faster RCNN | RGB | 0.0420 | 0.4464 | 0.5337 | 0.4861 | Detectron2 baseline |
-| RetinaNet | RGB | 0.0670 | 0.2307 | 0.6282 | 0.3375 | Detectron2 baseline |
-| YOLO26s | RGB | 0.3259 | 0.5115 | 0.5320 | 0.5217 | Ultralytics baseline |
-| Faster RCNN | Thermal | 0.1051 | 0.7047 | 0.5716 | 0.6312 | Better than RGB |
-| RetinaNet | Thermal | 0.1488 | 0.6192 | 0.6999 | 0.6570 | 1.4× better AP than Faster R-CNN |
-| YOLO26s | Thermal | 0.6210 | 0.6685 | **0.8111** | 0.7333 | Best single-modal baseline |
+| Faster RCNN | RGB | 0.0402 | 0.4776 | 0.5000 | 0.4885 | Detectron2 baseline |
+| RetinaNet | RGB | 0.0547 | 0.4910 | 0.5324 | 0.5109 | Detectron2 baseline |
+| YOLO26s | RGB | 0.3259 | 0.5115 | 0.5320 | 0.5216 | Ultralytics baseline |
+| Faster RCNN | Thermal | 0.0992 | 0.7337 | 0.5323 | 0.6170 | Better than RGB |
+| RetinaNet | Thermal | 0.1380 | 0.6945 | 0.6307 | 0.6611 | 1.4× better AP than Faster R-CNN |
+| YOLO26s | Thermal | 0.6210 | 0.6685 | **0.8111** | 0.7329 | Best single-modal baseline |
 
 ### Key Findings
 
-1. **Multi-modal Superiority with Fair NMS**: Phase 6.3 (RGBT fusion) achieves **1.13× higher AP** than YOLO26s Thermal (0.7018 vs 0.6210)—the best single-modal baseline—and **4.7× higher AP** than RetinaNet Thermal (0.1488) when using comparable NMS suppression ranges. Multi-modal fusion fundamentally outperforms single-modal approaches.
+1. **Multi-modal Superiority with Fair NMS**: Phase 6.3 (RGBT fusion) achieves **1.13× higher AP** than YOLO26s Thermal (0.7018 vs 0.6210)—the best single-modal baseline—and **5.1× higher AP** than RetinaNet Thermal (0.1380) when using comparable NMS suppression ranges. Multi-modal fusion fundamentally outperforms single-modal approaches.
 2. **NMS Robustness**: Stronger NMS (radius=7.0) **improves** Phase 6.3 performance (+18.8% AP, +11.3% F1), proving the advantage stems from superior feature learning rather than lenient duplicate suppression.
-3. **Confidence Calibration Matters**: At the interpolation operating point, Phase 6.3 shows **strong confidence ranking** (precision 0.7868, recall 0.7204, F1 0.7521), while YOLO26s Thermal attains higher recall (0.8111, +0.0907) with lower precision (0.6685). Despite this recall trade-off, Phase 6.3 still achieves the best F1 by **+0.0188** (0.7521 vs 0.7333). Detectron2 models still exhibit AP collapse despite reasonable single-threshold F1 scores (Faster R-CNN Thermal: F1=0.63, AP=0.105; RetinaNet Thermal: F1=0.66, AP=0.149).
-4. **Thermal Modality Advantage**: Thermal consistently outperforms RGB across all baselines (Faster RCNN: 2.5×, RetinaNet: 2.2×, YOLO26s: 1.9× AP improvement), validating thermal imaging importance for aerial crowd detection.
-5. **Architecture-Dependent Performance**: YOLO26s Thermal (AP=0.6210) dramatically outperforms Detectron2 models (RetinaNet: 0.1488, Faster R-CNN: 0.1051), suggesting anchor-free approaches better suit small-object aerial detection than anchor-based methods.
+3. **Confidence Calibration Matters**: At the interpolation operating point, Phase 6.3 shows **strong confidence ranking** (precision 0.7868, recall 0.7204, F1 0.7521), while YOLO26s Thermal attains higher recall (0.8111, +0.0907) with lower precision (0.6685). Despite this recall trade-off, Phase 6.3 still achieves the best F1 by **+0.0192** (0.7521 vs 0.7329). Detectron2 models still exhibit AP collapse despite reasonable single-threshold F1 scores (Faster R-CNN Thermal: F1=0.62, AP=0.099; RetinaNet Thermal: F1=0.66, AP=0.138).
+4. **Thermal Modality Advantage**: Thermal consistently outperforms RGB across all baselines (Faster RCNN: 2.5×, RetinaNet: 2.5×, YOLO26s: 1.9× AP improvement), validating thermal imaging importance for aerial crowd detection.
+5. **Architecture-Dependent Performance**: YOLO26s Thermal (AP=0.6210) dramatically outperforms Detectron2 models (RetinaNet: 0.1380, Faster R-CNN: 0.0992), suggesting anchor-free approaches better suit small-object aerial detection than anchor-based methods.
 6. **Deployment Flexibility & Robustness**: Phase 6.3 can adjust NMS post-deployment, and its superior AP indicates better confidence ranking across all thresholds—critical for adaptive systems where optimal thresholds may change per deployment scenario.
 
 ### Visual Comparisons
@@ -460,7 +465,7 @@ Below are example detections from baseline models on test images (AP@15px RAW mo
 | ![Faster RCNN RGB - Image 117](image/compare/detectron2-faster-rcnn-fpn-3x/117_comparison.jpg) | ![Faster RCNN Thermal - Image 117](image/compare/detectron2-faster-rcnn-fpn-3x/117R_comparison.jpg) |
 | ![Faster RCNN RGB - Image 1206](image/compare/detectron2-faster-rcnn-fpn-3x/1206_comparison.jpg) | ![Faster RCNN Thermal - Image 1206](image/compare/detectron2-faster-rcnn-fpn-3x/1206R_comparison.jpg) |
 
-*Note: Faster R-CNN achieves moderate recall (53% RGB, 57% Thermal) but suffers from low AP@8px (0.042 RGB, 0.105 Thermal), indicating moderate confidence calibration issues—better than initially reported but still significantly trailing YOLO26s.*
+*Note: Faster R-CNN achieves moderate recall (50% RGB, 53% Thermal) but suffers from low AP@8px (0.040 RGB, 0.099 Thermal), indicating moderate confidence calibration issues—better than initially reported but still significantly trailing YOLO26s.*
 
 #### RetinaNet (Detectron2)
 | RGB Inference | Thermal Inference |
@@ -470,7 +475,7 @@ Below are example detections from baseline models on test images (AP@15px RAW mo
 | ![RetinaNet RGB - Image 117](image/compare/detectron2-retinanet-fpn-1x/117_comparison.jpg) | ![RetinaNet Thermal - Image 117](image/compare/detectron2-retinanet-fpn-1x/117R_comparison.jpg) |
 | ![RetinaNet RGB - Image 1206](image/compare/detectron2-retinanet-fpn-1x/1206_comparison.jpg) | ![RetinaNet Thermal - Image 1206](image/compare/detectron2-retinanet-fpn-1x/1206R_comparison.jpg) |
 
-*Note: RetinaNet achieves better thermal performance (AP@8px 0.1488) than Faster R-CNN (0.1051), with balanced precision (62%) and recall (70%), but both Detectron2 models significantly trail YOLO26s Thermal (AP 0.6210) by 4-6×.*
+*Note: RetinaNet achieves better thermal performance (AP@8px 0.1380) than Faster R-CNN (0.0992), with balanced precision (69%) and recall (63%), but both Detectron2 models significantly trail YOLO26s Thermal (AP 0.6210) by 4-6×.*
 
 #### YOLO26s
 | RGB Inference | Thermal Inference |
