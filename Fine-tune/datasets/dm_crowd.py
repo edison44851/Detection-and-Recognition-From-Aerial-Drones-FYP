@@ -86,19 +86,25 @@ class Crowd(data.Dataset):
             target = k
             RGB = self.RGB_transform(RGB)
             T = self.T_transform(T)
+            if not isinstance(RGB, torch.Tensor):
+                RGB = transforms.ToTensor()(RGB)
+            if not isinstance(T, torch.Tensor):
+                T = transforms.ToTensor()(T)
             width, height = RGB.shape[2], RGB.shape[1]
             m = int(width / 224)
             n = int(height / 224)
-            for i in range(0, m):
-                for j in range(0, n):
-                    if i == 0 and j == 0:
-                        img_return = RGB[:, j * 224: 224 * (j + 1), i * 224:(i + 1) * 224].unsqueeze(0)
-                        t_return = T[:, j * 224: 224 * (j + 1), i * 224:(i + 1) * 224].unsqueeze(0)
-                    else:
-                        crop_img = RGB[:, j * 224: 224 * (j + 1), i * 224:(i + 1) * 224].unsqueeze(0)
-                        crop_t = T[:, j * 224: 224 * (j + 1), i * 224:(i + 1) * 224].unsqueeze(0)
-                        img_return = torch.cat([img_return, crop_img], 0)
-                        t_return = torch.cat([t_return, crop_t], 0)
+            img_tiles = []
+            t_tiles = []
+            if m == 0 or n == 0:
+                img_tiles.append(RGB.unsqueeze(0))
+                t_tiles.append(T.unsqueeze(0))
+            else:
+                for i in range(0, m):
+                    for j in range(0, n):
+                        img_tiles.append(RGB[:, j * 224: 224 * (j + 1), i * 224:(i + 1) * 224].unsqueeze(0))
+                        t_tiles.append(T[:, j * 224: 224 * (j + 1), i * 224:(i + 1) * 224].unsqueeze(0))
+            img_return = torch.cat(img_tiles, 0)
+            t_return = torch.cat(t_tiles, 0)
 
             name = os.path.basename(gt_path).split('.')[0]
             input = [img_return, t_return]

@@ -1,6 +1,7 @@
 """Data management: dataset and dataloader setup."""
 
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
 import logging
 import os
 import torch
@@ -60,7 +61,7 @@ class DataManager:
         """
         self.world_size = world_size
         self.train_dataloader: Optional[DataLoader] = None
-        self.val_dataloader: Optional[DataLoader] = None
+        self.val_dataloader: Union[DataLoader, List, None] = None
         self.test_dataloader: Optional[DataLoader] = None
     
     def setup_detection_data(self, args: Any, downsample_ratio: int) -> None:

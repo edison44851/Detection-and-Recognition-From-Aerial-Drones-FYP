@@ -1,9 +1,10 @@
 from functools import partial
+from typing import Callable
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import torch
-from timm.layers import DropPath
+from timm.layers.drop import DropPath
 
 
 class conv_block(nn.Module):
@@ -184,7 +185,7 @@ class CrossAttentionBlock(nn.Module):
                  attn_drop_ratio=0.1,
                  drop_path_ratio=0.1,
                  act_layer=nn.GELU,
-                 norm_layer=nn.LayerNorm):
+                 norm_layer: Callable[..., nn.Module] = nn.LayerNorm):
         super(CrossAttentionBlock, self).__init__()
         self.norm1_q = norm_layer(dim)
         self.norm1_kv = norm_layer(dim)

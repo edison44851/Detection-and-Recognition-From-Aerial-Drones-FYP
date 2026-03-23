@@ -95,7 +95,7 @@ class LossManager:
         gt_discrete: Optional[torch.Tensor],
         img_size: tuple,
         downsample_ratio: int
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """Compute all counting-related losses.
         
         Args:
@@ -110,6 +110,10 @@ class LossManager:
         Returns:
             Dict with keys: ot_loss, ot_obj_value, wd, count_loss, tv_loss, N
         """
+        assert self.ot_loss is not None
+        assert self.mae is not None
+        assert self.tv_loss is not None
+        assert gt_discrete is not None, "gt_discrete required for TV loss"
         N = outputs.size(0)
         img_h, img_w = img_size
         
@@ -164,7 +168,7 @@ class LossManager:
         size_pred: Optional[torch.Tensor],
         offset_pred: torch.Tensor,
         detection_targets: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """Compute all detection-related losses with numerical stability.
         
         Args:
@@ -195,8 +199,11 @@ class LossManager:
         pos_mask = (heat_target > 0).float()
         neg_mask = 1.0 - pos_mask
         
+        iou_l: torch.Tensor = torch.tensor(0.0, device=self.device)
+        assert self.l1 is not None
         if self.use_focal:
             # Use clipped predictions for focal loss
+            assert self.heatmap_bce_logits is not None
             ce = self.heatmap_bce_logits(heat_pred_clipped, heat_target)
             # Sigmoid with clamping for numerical stability
             p = torch.sigmoid(heat_pred_clipped)
@@ -204,6 +211,7 @@ class LossManager:
             focal_factor = (self.focal_alpha * torch.pow(1.0 - p_t, self.focal_gamma)).detach()
             loss_map = focal_factor * ce
         else:
+            assert self.heatmap_loss is not None
             loss_map = self.heatmap_loss(heat_pred_clipped, heat_target)
         
         # Background suppression: Penalize high activations in background regions

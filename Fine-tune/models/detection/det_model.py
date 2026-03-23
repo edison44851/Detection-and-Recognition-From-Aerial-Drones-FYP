@@ -46,7 +46,7 @@ class DetectionHeadWrapper(nn.Module):
         Returns:
             heat, size, offset
         """
-        if self.use_fpn:
+        if self.use_fpn and self.fpn is not None:
             feats = self.fpn(feats)
         return self.head(feats)
 

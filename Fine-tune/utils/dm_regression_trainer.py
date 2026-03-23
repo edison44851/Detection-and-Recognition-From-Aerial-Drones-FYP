@@ -117,6 +117,7 @@ class RegTrainer(Trainer):
 
     def _create_optimizer(self) -> None:
         """Create optimizer via OptimizerBuilder."""
+        assert self.model is not None
         self.optimizer = OptimizerBuilder.create_optimizer(self.model, self.args, self.rank)
         self.scheduler = None  # Will be initialized in setup()
 
@@ -222,6 +223,7 @@ class RegTrainer(Trainer):
     def train(self):
         """training process"""
         args = self.args
+        assert self.model is not None
         for epoch in range(self.start_epoch, args.max_epoch):
             logging.info('-' * 5 + 'Epoch {}/{}'.format(epoch, args.max_epoch - 1) + '-' * 5)
             self.epoch = epoch
@@ -229,11 +231,12 @@ class RegTrainer(Trainer):
             if args.task in ('detection', 'multi') and args.unfreeze_epoch >= 0 and epoch == args.unfreeze_epoch:
                 logging.info('Unfreezing backbone parameters at epoch {}'.format(epoch))
                 # handle DDP-wrapped model
-                backbone = self.model.module.backbone if self.is_distributed else self.model.backbone
+                _unwrapped = self.model.module if isinstance(self.model, torch.nn.parallel.DistributedDataParallel) else self.model
+                backbone = getattr(_unwrapped, 'backbone')
                 for name, p in backbone.named_parameters():
                     p.requires_grad = True
                 # rebuild optimizer to include all params (use smaller lr)
-                params = self.model.parameters() if not self.is_distributed else self.model.module.parameters()
+                params = _unwrapped.parameters()
                 self.optimizer = optim.Adam(params, lr=args.lr * 0.2, weight_decay=args.weight_decay)
             self.train_epoch()
             mae_is_best = False
@@ -339,21 +342,28 @@ class RegTrainer(Trainer):
         epoch_rd_loss = AverageMeter()
         epoch_start = time.time()
         nan_inf_count = 0  # Track NaN/Inf occurrences
+        assert self.model is not None
         self.model.train()
 
+        assert self.dataloader is not None
         dataloader = tqdm(self.dataloader, desc="Training", leave=False, dynamic_ncols=True) if self.rank == 0 else self.dataloader
         for step, batch in enumerate(dataloader):
             # Prepare batch data
             inputs, points, gt_discrete, gd_count, detection_targets = self._prepare_batch(batch)
             
-            if type(inputs) == list:
+            if isinstance(inputs, list):
                 N = inputs[0].size(0)
-                rgb, t = inputs
+                rgb, t = inputs[0], inputs[1]
             else:
+                assert isinstance(inputs, torch.Tensor)
                 N = inputs.size(0)
                 rgb, t = inputs, inputs
 
             with torch.set_grad_enabled(True):
+                heat_pred: Optional[torch.Tensor] = None
+                size_pred: Optional[torch.Tensor] = None
+                offset_pred: Optional[torch.Tensor] = None
+                features: Optional[torch.Tensor] = None
                 # Forward pass based on task
                 if self.args.task == 'detection':
                     outputs, (heat_pred, size_pred, offset_pred) = self.model(rgb, t)
@@ -366,6 +376,7 @@ class RegTrainer(Trainer):
                         outputs = res
                         features = None
                 
+                assert isinstance(outputs, torch.Tensor)
                 # Normalize outputs
                 outputs_sum = outputs.view([outputs.size(0), -1]).sum(1).unsqueeze(1).unsqueeze(2).unsqueeze(3)
                 outputs_normed = outputs / (outputs_sum + 1e-6)
@@ -373,6 +384,7 @@ class RegTrainer(Trainer):
                 # Compute task-specific losses
                 if self.args.task == 'detection':
                     # Detection task - only detection losses
+                    assert heat_pred is not None and offset_pred is not None and detection_targets is not None
                     det_losses = self.loss_manager.compute_detection_losses(heat_pred, size_pred, offset_pred, detection_targets)
                     total_loss = det_losses['det_loss']
                     
@@ -409,6 +421,7 @@ class RegTrainer(Trainer):
                     epoch_tv_loss.update(tv_loss.item(), N)
                     
                     # RD loss
+                    assert features is not None and self.loss_manager.rd_loss is not None
                     rd_loss = self.loss_manager.rd_loss(features, points, image_size=(img_h, img_w))
                     epoch_rd_loss.update(rd_loss.item(), N)
                     
@@ -454,8 +467,10 @@ class RegTrainer(Trainer):
                 epoch_game.update(np.mean(abs(pred_err)), N)
         
         # Close tqdm
-        if self.rank == 0 and hasattr(dataloader, 'close'):
-            dataloader.close()
+        if self.rank == 0:
+            _dl_close = getattr(dataloader, 'close', None)
+            if _dl_close is not None:
+                _dl_close()
 
         # Log epoch summary
         if self.rank == 0:

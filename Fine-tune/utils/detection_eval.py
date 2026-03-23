@@ -64,7 +64,7 @@ def heatmap_peaks(heatmap: np.ndarray, min_score: float = 0.01, max_detections: 
     
     # Apply NMS if requested (CenterNet uses this to suppress nearby duplicates)
     if use_nms:
-        heatmap = _nms(heatmap, kernel=nms_kernel)
+        heatmap = np.asarray(_nms(heatmap, kernel=nms_kernel))
     
     # Vectorized 3x3 local-maximum detection using sliding-window max (numpy)
     pads = np.pad(heatmap, ((1, 1), (1, 1)), mode='constant', constant_values=-np.inf)

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import cast
 
 
 class CenterHead(nn.Module):
@@ -55,7 +56,9 @@ class CenterHead(nn.Module):
         )
         # CRITICAL: Initialize heatmap bias properly for drone dataset
         # For small objects in drone images, we need different initialization
-        nn.init.constant_(self.heatmap_head[-1].bias, -4.6)  # More conservative for drone data
+        _heatmap_last = cast(nn.Conv2d, self.heatmap_head[-1])
+        assert _heatmap_last.bias is not None
+        nn.init.constant_(_heatmap_last.bias, -4.6)  # More conservative for drone data
 
         # Size head (width, height) — SKIP in keypoint-only mode
         if not self.keypoint_only:
@@ -101,7 +104,9 @@ class CenterHead(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu', a=0.1)
         
         # Re-initialize heatmap bias for drone dataset
-        nn.init.constant_(self.heatmap_head[-1].bias, -2.0)
+        _heatmap_last = cast(nn.Conv2d, self.heatmap_head[-1])
+        assert _heatmap_last.bias is not None
+        nn.init.constant_(_heatmap_last.bias, -2.0)
 
     def forward(self, feats):
         # Upsample features (stride 8 → 4)
@@ -111,7 +116,7 @@ class CenterHead(nn.Module):
         heat = self.heatmap_head(x)
         
         # Size head: skip if keypoint_only mode
-        if self.keypoint_only:
+        if self.keypoint_only or self.size_head is None:
             size = None
         else:
             size = F.relu(self.size_head(x))  # Size must be non-negative
@@ -135,10 +140,12 @@ if __name__ == '__main__':
     print(f'Heatmap: {h.shape} (should be 2x upsampled: 64x64)')
     print(f'Size: {s.shape}')
     print(f'Offset: {o.shape}')
-    print(f'Heatmap bias (should be -2.19): {net.heatmap_head[-1].bias.item():.4f}')
+    _bias = cast(nn.Conv2d, net.heatmap_head[-1]).bias
+    print(f'Heatmap bias (should be -2.19): {_bias.item() if _bias is not None else "N/A"}')
     
     print("\nTesting CenterHead without deconv (stride stays 8):")
     net2 = CenterHead(in_channels=768, head_conv=256, use_deconv=False)
     h2, s2, o2 = net2(feats)
     print(f'Heatmap: {h2.shape} (should still be 2x upsampled via bilinear: 64x64)')
-    print(f'Heatmap bias: {net2.heatmap_head[-1].bias.item():.4f}')
+    _bias2 = cast(nn.Conv2d, net2.heatmap_head[-1]).bias
+    print(f'Heatmap bias: {_bias2.item() if _bias2 is not None else "N/A"}')

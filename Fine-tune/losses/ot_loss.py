@@ -92,11 +92,13 @@ class OT_Loss(Module):
                 target_prob = (torch.ones([len(im_points)]) / len(im_points)).to(self.device)
                 # use sinkhorn to solve OT, compute optimal beta.
                 try:
-                    P, log = sinkhorn(target_prob, source_prob, dis, self.reg, maxIter=self.num_of_iter_in_ot, log=True)
+                    _sinkhorn_result = sinkhorn(target_prob, source_prob, dis, self.reg, maxIter=self.num_of_iter_in_ot, log=True)
                 except AssertionError as e:
                     logging.warning('sinkhorn assertion: num_points=%s, source_prob_shape=%s, dis_shape=%s', len(im_points), tuple(source_prob.shape), tuple(dis.shape))
                     raise
-                beta = log['beta'] # size is the same as source_prob: [#cood * #cood]
+                P, log_dict = _sinkhorn_result  # type: ignore[misc]
+                log_dict: dict
+                beta = log_dict['beta'] # size is the same as source_prob: [#cood * #cood]
                 # beta corresponds to flattened [H * W] grid; reshape using (output_h, output_w)
                 ot_obj_values = ot_obj_values + torch.sum(normed_density[idx] * beta.view([1, self.output_h, self.output_w]))
                 # compute the gradient of OT loss to predicted density (unnormed_density).

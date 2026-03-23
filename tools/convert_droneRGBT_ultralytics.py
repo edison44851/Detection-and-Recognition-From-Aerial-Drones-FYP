@@ -20,7 +20,7 @@ This script:
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from tqdm import tqdm
@@ -43,15 +43,27 @@ def parse_xml_annotation(xml_path: str) -> Tuple[int, int, List[Tuple[int, int]]
     
     # Extract image dimensions
     size = root.find('size')
-    width = int(size.find('width').text)
-    height = int(size.find('height').text)
+    if size is None:
+        return 0, 0, []
+    width_elem = size.find('width')
+    height_elem = size.find('height')
+    if width_elem is None or height_elem is None or width_elem.text is None or height_elem.text is None:
+        return 0, 0, []
+    width = int(width_elem.text)
+    height = int(height_elem.text)
     
     # Extract center points
     points = []
     for obj in root.findall('object'):
         point = obj.find('point')
-        x = int(point.find('x').text)
-        y = int(point.find('y').text)
+        if point is None:
+            continue
+        x_elem = point.find('x')
+        y_elem = point.find('y')
+        if x_elem is None or y_elem is None or x_elem.text is None or y_elem.text is None:
+            continue
+        x = int(x_elem.text)
+        y = int(y_elem.text)
         points.append((x, y))
     
     return width, height, points
@@ -129,7 +141,7 @@ def copy_xml_annotations(gt_dir: Path) -> None:
 
 
 def convert_dataset_separate(data_dir: str, output_dir: str, bbox_size: int = 15, 
-                            splits: dict = None):
+                            splits: Optional[Dict[str, str]] = None):
     """
     Convert DroneRGBT dataset to YOLO format with separate RGB and Thermal modalities.
     
