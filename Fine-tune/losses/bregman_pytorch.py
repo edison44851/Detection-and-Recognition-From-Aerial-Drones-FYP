@@ -5,7 +5,7 @@ M_EPS = 1e-16
 
 def sinkhorn(a, b, C, reg=1e-1, method='sinkhorn', maxIter=1000, tau=1e3,
              stopThr=1e-9, verbose=False, log=True, warm_start=None, eval_freq=10, print_freq=200, **kwargs):
-    """
+    r"""
     Solve the entropic regularization optimal transport
     The input should be PyTorch tensors
     The function solves the following optimization problem:
@@ -87,22 +87,21 @@ def sinkhorn(a, b, C, reg=1e-1, method='sinkhorn', maxIter=1000, tau=1e3,
         else:
             raise ValueError("Unknown method '%s'." % method)
 
-        # normalize output to (P, log)
+        # normalize output to (P, log_dict)
+        _log: dict = {}
         if isinstance(res, tuple) and len(res) == 2:
-            P, _log = res
+            P, _maybe_log = res
+            if isinstance(_maybe_log, dict):
+                _log = _maybe_log
         else:
-            P = res
-            _log = {}
-
-        # ensure log dict exists
-        if _log is None:
-            _log = {}
+            P = res  # type: ignore[assignment]
 
         _log.setdefault('solver', name)
         # count NaN/Inf in the plan
         try:
-            nan_count = int(torch.isnan(P).sum().item())
-            inf_count = int(torch.isinf(P).sum().item())
+            _P: torch.Tensor = P if isinstance(P, torch.Tensor) else P[0]  # type: ignore[index]
+            nan_count = int(torch.isnan(_P).sum().item())
+            inf_count = int(torch.isinf(_P).sum().item())
         except Exception:
             nan_count = -1
             inf_count = -1
@@ -133,7 +132,7 @@ def sinkhorn(a, b, C, reg=1e-1, method='sinkhorn', maxIter=1000, tau=1e3,
 
 def sinkhorn_knopp(a, b, C, reg=1e-1, maxIter=1000, stopThr=1e-9,
                    verbose=False, log=False, warm_start=None, eval_freq=10, print_freq=200, **kwargs):
-    """
+    r"""
     Solve the entropic regularization optimal transport
     The input should be PyTorch tensors
     The function solves the following optimization problem:
@@ -191,8 +190,7 @@ def sinkhorn_knopp(a, b, C, reg=1e-1, maxIter=1000, stopThr=1e-9,
     assert reg > 0, 'reg should be greater than 0'
     assert a.min() >= 0. and b.min() >= 0., 'Elements in a or b less than 0'
 
-    if log:
-        log = {'err': []}
+    log_dict: dict = {'err': []} if log else {}
 
     if warm_start is not None:
         u = warm_start['u']
@@ -237,7 +235,7 @@ def sinkhorn_knopp(a, b, C, reg=1e-1, maxIter=1000, stopThr=1e-9,
             b_hat = torch.matmul(u, K) * v
             err = (b - b_hat).pow(2).sum().item()
             # err = (b - b_hat).abs().sum().item()
-            log['err'].append(err)
+            log_dict['err'].append(err)
 
         if verbose and it % print_freq == 0:
             print('iteration {:5d}, constraint error {:5e}'.format(it, err))
@@ -245,22 +243,22 @@ def sinkhorn_knopp(a, b, C, reg=1e-1, maxIter=1000, stopThr=1e-9,
         it = it + 1
 
     if log:
-        log['u'] = u
-        log['v'] = v
-        log['alpha'] = reg * torch.log(u + M_EPS)
-        log['beta'] = reg * torch.log(v + M_EPS)
+        log_dict['u'] = u
+        log_dict['v'] = v
+        log_dict['alpha'] = reg * torch.log(u + M_EPS)
+        log_dict['beta'] = reg * torch.log(v + M_EPS)
 
     # transport plan
     P = u.reshape(-1, 1) * K * v.reshape(1, -1)
     if log:
-        return P, log
+        return P, log_dict
     else:
         return P
 
 
 def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
                         verbose=False, log=False, warm_start=None, eval_freq=10, print_freq=200, **kwargs):
-    """
+    r"""
     Solve the entropic regularization OT problem with log stabilization
     The function solves the following optimization problem:
 
@@ -324,8 +322,7 @@ def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
     assert reg > 0, 'reg should be greater than 0'
     assert a.min() >= 0. and b.min() >= 0., 'Elements in a or b less than 0'
 
-    if log:
-        log = {'err': []}
+    log_dict: dict = {'err': []} if log else {}
 
     if warm_start is not None:
         alpha = warm_start['alpha']
@@ -395,7 +392,7 @@ def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
             update_P(alpha, beta, u, v, ab_updated)
             b_hat = torch.sum(P, 0)
             err = (b - b_hat).pow(2).sum().item()
-            log['err'].append(err)
+            log_dict['err'].append(err)
 
         if verbose and it % print_freq == 0:
             print('iteration {:5d}, constraint error {:5e}'.format(it, err))
@@ -403,16 +400,16 @@ def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
         it = it + 1
 
     if log:
-        log['u'] = u
-        log['v'] = v
-        log['alpha'] = alpha + reg * torch.log(u + M_EPS)
-        log['beta'] = beta + reg * torch.log(v + M_EPS)
+        log_dict['u'] = u
+        log_dict['v'] = v
+        log_dict['alpha'] = alpha + reg * torch.log(u + M_EPS)
+        log_dict['beta'] = beta + reg * torch.log(v + M_EPS)
 
     # transport plan
     update_P(alpha, beta, u, v, False)
 
     if log:
-        return P, log
+        return P, log_dict
     else:
         return P
 
@@ -420,7 +417,7 @@ def sinkhorn_stabilized(a, b, C, reg=1e-1, maxIter=1000, tau=1e3, stopThr=1e-9,
 def sinkhorn_epsilon_scaling(a, b, C, reg=1e-1, maxIter=100, maxInnerIter=100, tau=1e3, scaling_base=0.75,
                              scaling_coef=None, stopThr=1e-9, verbose=False, log=False, warm_start=None, eval_freq=10,
                              print_freq=200, **kwargs):
-    """
+    r"""
     Solve the entropic regularization OT problem with log stabilization
     The function solves the following optimization problem:
 
@@ -484,33 +481,38 @@ def sinkhorn_epsilon_scaling(a, b, C, reg=1e-1, maxIter=100, maxInnerIter=100, t
     assert reg > 0, 'reg should be greater than 0'
     assert a.min() >= 0. and b.min() >= 0., 'Elements in a or b less than 0'
 
-    def get_reg(it, reg, pre_reg):
+    if scaling_coef is None:
+        scaling_coef = float(C.max()) + reg
+
+    # scaling_coef is now guaranteed float; capture it so the closure is well-typed
+    _scaling_coef: float = float(scaling_coef)
+
+    def get_reg(it: int, reg: float, pre_reg: float) -> float:
         if it == 1:
-            return scaling_coef
+            return _scaling_coef
         else:
             if (pre_reg - reg) * scaling_base < M_EPS:
                 return reg
             else:
                 return (pre_reg - reg) * scaling_base + reg
 
-    if scaling_coef is None:
-        scaling_coef = C.max() + reg
-
     it = 1
-    err = 1
-    running_reg = scaling_coef
+    err = 1.0
+    running_reg: float = float(scaling_coef)
 
-    if log:
-        log = {'err': []}
+    log_dict: dict = {'err': []} if log else {}
 
     warm_start = None
+    _log: dict = {}
+    P: torch.Tensor = torch.zeros(1)  # initialised; overwritten on first loop iteration
 
     while (err > stopThr and it <= maxIter):
-        running_reg = get_reg(it, reg, running_reg)
-        P, _log = sinkhorn_stabilized(a, b, C, running_reg, maxIter=maxInnerIter, tau=tau,
-                                      stopThr=stopThr, verbose=False, log=True,
-                                      warm_start=warm_start, eval_freq=eval_freq, print_freq=print_freq,
-                                      **kwargs)
+        running_reg = float(get_reg(it, reg, running_reg))
+        _res = sinkhorn_stabilized(a, b, C, running_reg, maxIter=maxInnerIter, tau=tau,
+                                   stopThr=stopThr, verbose=False, log=True,
+                                   warm_start=warm_start, eval_freq=eval_freq, print_freq=print_freq,
+                                   **kwargs)
+        P, _log = _res  # type: ignore[misc]
 
         warm_start = {}
         warm_start['alpha'] = _log['alpha']
@@ -518,8 +520,9 @@ def sinkhorn_epsilon_scaling(a, b, C, reg=1e-1, maxIter=100, maxInnerIter=100, t
 
         primal_val = (C * P).sum() + reg * (P * torch.log(P)).sum() - reg * P.sum()
         dual_val = (_log['alpha'] * a).sum() + (_log['beta'] * b).sum() - reg * P.sum()
-        err = primal_val - dual_val
-        log['err'].append(err)
+        err = (primal_val - dual_val).item()
+        if log:
+            log_dict['err'].append(err)
 
         if verbose and it % print_freq == 0:
             print('iteration {:5d}, constraint error {:5e}'.format(it, err))
@@ -527,8 +530,8 @@ def sinkhorn_epsilon_scaling(a, b, C, reg=1e-1, maxIter=100, maxInnerIter=100, t
         it = it + 1
 
     if log:
-        log['alpha'] = _log['alpha']
-        log['beta'] = _log['beta']
-        return P, log
+        log_dict['alpha'] = _log['alpha']
+        log_dict['beta'] = _log['beta']
+        return P, log_dict
     else:
         return P

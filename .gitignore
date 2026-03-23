@@ -1,6 +1,8 @@
 .data
 .reference
 .weights
+.venv
+.venv/
 .vscode
 __pycache__
 *.log
@@ -19,3 +21,8 @@ teammates
 *.json
 *.txt
 *.zip
+masked_image/
+edison_commit_changes/
+git_history_file_action_counts.csv
+visuals_thermal_only/
+visuals_detection_masked_phase3/

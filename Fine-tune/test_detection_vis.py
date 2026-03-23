@@ -14,6 +14,7 @@ Usage:
 import argparse
 import random
 from pathlib import Path
+from typing import cast
 import torch
 import torch.nn as nn
 import numpy as np
@@ -190,6 +191,7 @@ def infer_and_visualize(args):
     # Create det_adaptor if it was used during training (match GN/BN)
     in_ch = 768
     if getattr(args, 'det_use_gn', False):
+        gn_groups = 1
         for g in (32, 16, 8, 4, 2, 1):
             if in_ch % g == 0:
                 gn_groups = g
@@ -307,16 +309,18 @@ def infer_and_visualize(args):
             # get GT points (numpy array Nx2) in pixel coords
             gt_pts = gt_pts_batch[i] if gt_pts_batch is not None else None
             if gt_pts is None:
-                gt_pts = []
+                gt_pts = np.zeros((0, 2), dtype=np.float32)
             else:
                 if isinstance(gt_pts, torch.Tensor):
                     gt_pts = gt_pts.cpu().numpy()
-                if gt_pts.ndim == 1 and len(gt_pts) == 0:
-                    gt_pts = []
+                gt_pts = np.asarray(gt_pts, dtype=np.float32)
+                if gt_pts.ndim == 1:
+                    gt_pts = np.zeros((0, 2), dtype=np.float32)
+            gt_pts = cast(np.ndarray, gt_pts)
 
             # For AP calculation: store per-image preds and GTs
             preds_per_image.append([(float(p[0]), float(p[1]), float(p[2])) for p in preds_px])
-            gts_per_image.append(np.array(gt_pts) if len(gt_pts) > 0 else np.zeros((0,2)))
+            gts_per_image.append(gt_pts if len(gt_pts) > 0 else np.zeros((0, 2)))
 
             # Apply optional post-extraction NMS (matches training's eval_nms settings)
             if getattr(args, 'eval_nms_radius', None):
@@ -462,7 +466,7 @@ def infer_and_visualize(args):
         tp_scores = [r[3] for r in csv_rows if r[4] == 'TP']
         fp_scores = [r[3] for r in csv_rows if r[4] == 'FP']
         plt.figure(figsize=(6,4))
-        bins = np.linspace(0.0, 1.0, 50)
+        bins = np.linspace(0.0, 1.0, 50).tolist()
         if len(fp_scores) > 0:
             plt.hist(fp_scores, bins=bins, alpha=0.6, label=f'FP (n={len(fp_scores)})', color='red')
         if len(tp_scores) > 0:

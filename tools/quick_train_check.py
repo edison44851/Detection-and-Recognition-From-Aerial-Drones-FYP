@@ -3,8 +3,9 @@ import sys
 sys.path.insert(0, os.path.abspath('Fine-tune'))
 from utils.dm_regression_trainer import RegTrainer
 from types import SimpleNamespace
+from typing import Any, cast
 import torch
-from torch.utils.data import Subset, DataLoader
+from torch.utils.data import Subset, DataLoader, Dataset
 
 # minimal args similar to train.py
 args = SimpleNamespace(
@@ -45,16 +46,33 @@ trainer.setup()
 
 # replace dataloaders with small subsets (first 2 samples) to make a quick dry-run
 try:
-    from torch.utils.data import Subset
-    trainer.dataloader = DataLoader(Subset(trainer.datasets, list(range(min(2, len(trainer.datasets))))), batch_size=1, shuffle=False, num_workers=0)
-    trainer.val_dataloader = DataLoader(Subset(trainer.val_dataset, list(range(min(2, len(trainer.val_dataset))))), batch_size=1, shuffle=False, num_workers=0)
-    trainer.test_dataloader = DataLoader(Subset(trainer.test_dataset, list(range(min(2, len(trainer.test_dataset))))), batch_size=1, shuffle=False, num_workers=0)
+    if isinstance(trainer.dataloader, DataLoader):
+        train_ds = cast(Dataset[Any], trainer.dataloader.dataset)
+        n_train = len(cast(Any, train_ds))
+        trainer.dataloader = DataLoader(
+            Subset(train_ds, list(range(min(2, n_train)))),
+            batch_size=1, shuffle=False, num_workers=0
+        )
+    if isinstance(trainer.val_dataloader, DataLoader):
+        val_ds = cast(Dataset[Any], trainer.val_dataloader.dataset)
+        n_val = len(cast(Any, val_ds))
+        trainer.val_dataloader = DataLoader(
+            Subset(val_ds, list(range(min(2, n_val)))),
+            batch_size=1, shuffle=False, num_workers=0
+        )
+    if isinstance(trainer.test_dataloader, DataLoader):
+        test_ds = cast(Dataset[Any], trainer.test_dataloader.dataset)
+        n_test = len(cast(Any, test_ds))
+        trainer.test_dataloader = DataLoader(
+            Subset(test_ds, list(range(min(2, n_test)))),
+            batch_size=1, shuffle=False, num_workers=0
+        )
 except Exception as e:
     print('Could not create subset dataloaders:', e)
 
 # run one training epoch (single quick loop)
 trainer.epoch = 0
-trainer.train_eopch()
+trainer.train_epoch()
 # run validation/test to print new diagnostics
 trainer.val_epoch()
 trainer.test_epoch()

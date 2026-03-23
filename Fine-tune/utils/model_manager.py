@@ -1,6 +1,6 @@
 """Model management: creation, checkpoint loading, and component freezing."""
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 import logging
 import torch
 import torch.nn as nn
@@ -76,16 +76,17 @@ class ModelManager:
     
     def _create_adaptor(self, args: Any) -> None:
         """Create detection adaptor (1x1 conv + normalization + ReLU)."""
+        if self.model is None:
+            return
         try:
             in_ch = 768
+            bn_layer: nn.Module = nn.BatchNorm2d(in_ch)
             if getattr(args, 'det_use_gn', False):
                 # Find appropriate group count
                 for g in (32, 16, 8, 4, 2, 1):
                     if in_ch % g == 0:
                         bn_layer = nn.GroupNorm(g, in_ch)
                         break
-            else:
-                bn_layer = nn.BatchNorm2d(in_ch)
             
             self.model.det_adaptor = nn.Sequential(
                 nn.Conv2d(in_ch, in_ch, kernel_size=1),
@@ -130,7 +131,8 @@ class ModelManager:
             raise
         except Exception as e:
             logging.warning('Error loading checkpoint, continuing with current weights: %s', repr(e))
-            return None, 0
+            return None, 0, None
+        return None, 0, None
     
     def _remap_checkpoint_keys(self, state_dict: Dict) -> Dict:
         """
@@ -179,6 +181,8 @@ class ModelManager:
             if self.is_distributed and isinstance(self.model, nn.parallel.DistributedDataParallel):
                 target_model = self.model.module
             
+            if target_model is None:
+                return
             result = target_model.load_state_dict(state_dict, strict=False)
             logging.info('Checkpoint loaded. Missing: %d, Unexpected: %d',
                         len(result.missing_keys), len(result.unexpected_keys))
@@ -191,15 +195,18 @@ class ModelManager:
         """Attach deferred detection head to model."""
         if not self._deferred_det_head:
             return
+        if self.model is None:
+            return
+        _head: nn.Module = self._deferred_det_head
         
         try:
-            self.model.attach_det_head(self._deferred_det_head)
+            getattr(self.model, 'attach_det_head')(_head)
             logging.info('Attached detection head to model')
             self._deferred_det_head = None
         except AttributeError:
             # Fallback for older model versions
             self.model.det_adaptor = getattr(self.model, 'det_adaptor', nn.Identity())
-            self.model.det_head = self._deferred_det_head
+            self.model.det_head = _head
             logging.info('Attached detection head (fallback mode)')
         except Exception as e:
             logging.error('Failed to attach detection head: %s', repr(e))
@@ -235,7 +242,8 @@ class ModelManager:
         # Ensure reg_layer is trainable unless frozen
         if not getattr(args, 'freeze_counter', False):
             if hasattr(target_model, 'reg_layer'):
-                for p in target_model.reg_layer.parameters():
+                reg_layer = cast(nn.Module, target_model.reg_layer)
+                for p in reg_layer.parameters():
                     p.requires_grad = True
     
     def _freeze_component(self, model: nn.Module, attr_name: str, label: str) -> None:
@@ -253,6 +261,7 @@ class ModelManager:
         """Get the actual model (unwrap DDP if needed)."""
         if self.is_distributed and isinstance(self.model, nn.parallel.DistributedDataParallel):
             return self.model.module
+        assert self.model is not None
         return self.model
     
     def wrap_with_ddp(self) -> None:

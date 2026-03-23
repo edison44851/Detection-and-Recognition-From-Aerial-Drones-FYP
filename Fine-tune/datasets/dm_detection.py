@@ -9,6 +9,7 @@ try:
     import cv2
     HAS_CV2 = True
 except ImportError:
+    cv2 = None
     HAS_CV2 = False
 
 
@@ -42,8 +43,8 @@ def apply_random_resize(rgb, t, points, scale_range=(0.5, 2.0)):
     new_w = int(w * scale)
     new_h = int(h * scale)
     
-    rgb_resized = rgb.resize((new_w, new_h), Image.BILINEAR)
-    t_resized = t.resize((new_w, new_h), Image.BILINEAR)
+    rgb_resized = rgb.resize((new_w, new_h), Image.Resampling.BILINEAR)
+    t_resized = t.resize((new_w, new_h), Image.Resampling.BILINEAR)
     
     # Adjust point coordinates
     if len(points) > 0:
@@ -70,8 +71,8 @@ def apply_random_flip(rgb, t, points):
         return rgb, t, points
     
     w = rgb.size[0]
-    rgb_flipped = rgb.transpose(Image.FLIP_LEFT_RIGHT)
-    t_flipped = t.transpose(Image.FLIP_LEFT_RIGHT)
+    rgb_flipped = rgb.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    t_flipped = t.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     
     # Mirror x coordinates
     if len(points) > 0:
@@ -145,6 +146,7 @@ def apply_clahe_thermal(thermal_pil, clip_limit=2.0, tile_size=8):
     if not HAS_CV2:
         # cv2 not available, return original
         return thermal_pil
+    assert cv2 is not None
     
     # Convert PIL to numpy array
     thermal_np = np.array(thermal_pil, dtype=np.uint8)  # Ensure uint8 for cv2
@@ -235,7 +237,7 @@ class DetectionDataset(Dataset):
         # Ensure RGB and thermal have the same spatial dimensions
         if rgb.size != t.size:
             # Resize thermal to match RGB dimensions
-            t = t.resize(rgb.size, Image.BILINEAR)
+            t = t.resize(rgb.size, Image.Resampling.BILINEAR)
         
         # Apply CLAHE to thermal image for contrast enhancement (Phase B)
         if self.thermal_clahe:
@@ -260,8 +262,12 @@ class DetectionDataset(Dataset):
                 rgb, t, points = apply_random_crop(rgb, t, points, self.aug_crop_size)
 
         # Apply normalization transforms
-        img = self.rgb_transform(rgb)  # tensor [3,H,W]
+        img = self.rgb_transform(rgb)
         timg = self.t_transform(t)
+        if not isinstance(img, torch.Tensor):
+            img = T.ToTensor()(img)
+        if not isinstance(timg, torch.Tensor):
+            timg = T.ToTensor()(timg)
 
         H, W = img.shape[1], img.shape[2]
         H_out = H // self.output_stride

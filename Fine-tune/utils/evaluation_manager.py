@@ -56,8 +56,8 @@ class EvaluationManager:
         self.trainer.model.eval()
 
         # Metric accumulators
-        game = [0, 0, 0, 0]
-        mse = [0, 0, 0, 0]
+        game: List[float] = [0.0, 0.0, 0.0, 0.0]
+        mse: List[float] = [0.0, 0.0, 0.0, 0.0]
         ap = None
 
         # Progress bar
@@ -87,6 +87,8 @@ class EvaluationManager:
                             heat_pred, offset_pred = output_dict[:2] if len(output_dict) >= 2 else (output_dict, None)
                     
                     # Extract detections
+                    if heat_pred is None:
+                        continue
                     preds = self._evaluate_detection_sample(heat_pred, offset_pred, sample)
                     all_preds.extend(preds)
                     all_gts.extend(sample['points'])
@@ -195,7 +197,7 @@ class EvaluationManager:
         """
         res = torch.sum(outputs).item() - (torch.sum(target).item() if target is not None else 0)
         relative_error = eval_relative(outputs, target) if target is not None else 0.0
-        return res, relative_error
+        return float(res), float(relative_error)
 
     def _evaluate_detection_sample(self, heat_pred: torch.Tensor, offset_pred: Optional[torch.Tensor], 
                                    sample: Optional[Dict] = None) -> List[List[Tuple[float, float, float]]]:
@@ -303,8 +305,8 @@ class EvaluationManager:
         Returns:
             Tuple of (game_list, mse_list) with 4 levels each
         """
-        game = [0, 0, 0, 0]
-        mse = [0, 0, 0, 0]
+        game: List[float] = [0.0, 0.0, 0.0, 0.0]
+        mse: List[float] = [0.0, 0.0, 0.0, 0.0]
         
         if target is None:
             return game, mse

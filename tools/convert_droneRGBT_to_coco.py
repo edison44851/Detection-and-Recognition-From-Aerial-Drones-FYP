@@ -43,7 +43,7 @@ def parse_xml_annotation(xml_path):
                 try:
                     x_elem = point.find("x")
                     y_elem = point.find("y")
-                    if x_elem is not None and y_elem is not None:
+                    if x_elem is not None and y_elem is not None and x_elem.text is not None and y_elem.text is not None:
                         cx = float(x_elem.text)
                         cy = float(y_elem.text)
                         centers.append((cx, cy))

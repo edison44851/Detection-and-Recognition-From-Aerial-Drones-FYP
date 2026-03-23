@@ -40,26 +40,30 @@ def compute_stats(data_dir, split='train'):
         fpath = os.path.join(split_dir, fname)
         img = Image.open(fpath).convert('RGB')
         img_np = np.array(img, dtype=np.float32) / 255.0  # Normalize to [0, 1]
-        
         # Accumulate
         if pixel_sum is None:
             pixel_sum = np.zeros(3)
             pixel_sum_sq = np.zeros(3)
-        
         # Sum across spatial dims
         pixel_sum += img_np.reshape(-1, 3).sum(axis=0)
         pixel_sum_sq += (img_np.reshape(-1, 3) ** 2).sum(axis=0)
         num_pixels += img_np.reshape(-1, 3).shape[0]
-    
+
+    # Guard against empty file list
+    if num_pixels == 0 or pixel_sum is None or pixel_sum_sq is None:
+        print(f"\n{split.upper()} split statistics (normalized to [0, 1]):")
+        print("  No images found. Mean and Std cannot be computed.")
+        return np.zeros(3), np.zeros(3)
+
     # Compute mean and std
     mean = pixel_sum / num_pixels
     var = (pixel_sum_sq / num_pixels) - (mean ** 2)
     std = np.sqrt(np.maximum(var, 0.0))  # Clamp negative values from numerical errors
-    
+
     print(f"\n{split.upper()} split statistics (normalized to [0, 1]):")
     print(f"  Mean: [{mean[0]:.3f}, {mean[1]:.3f}, {mean[2]:.3f}]")
     print(f"  Std:  [{std[0]:.3f}, {std[1]:.3f}, {std[2]:.3f}]")
-    
+
     return mean, std
 
 

@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import numpy as np
-from typing import Optional
+from typing import Optional, List, Union
 import os
 from models.distillation.unet_cross_att import U_Net
 import logging
@@ -45,7 +45,7 @@ class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
 
-    def __init__(self, drop_prob=None):
+    def __init__(self, drop_prob: float = 0.0):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
@@ -239,6 +239,7 @@ class WindowAttention(nn.Module):
         relative_coords[:, :, 0] = relative_coords[:, :, 0] * (2 * self.window_size[1] - 1)
         relative_position_index = relative_coords.sum(-1)  # [Mh*Mw, Mh*Mw]
         self.register_buffer("relative_position_index", relative_position_index)
+        self.relative_position_index: torch.Tensor
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
@@ -333,6 +334,9 @@ class SwinTransformerBlock(nn.Module):
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        # Declare H and W so forward() operations have correct int type
+        self.H: int = 0
+        self.W: int = 0
 
     def forward(self, x, attn_mask):
         H, W = self.H, self.W
@@ -409,7 +413,7 @@ class BasicLayer(nn.Module):
 
     def __init__(self, dim, depth, num_heads, window_size,
                  mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0.,
-                 drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
+                 drop_path: Union[float, List[float]] = 0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
         super().__init__()
         self.dim = dim
         self.depth = depth
@@ -468,7 +472,7 @@ class BasicLayer(nn.Module):
         attn_mask = self.create_mask(x, H, W)  # [nW, Mh*Mw, Mh*Mw]
         for blk in self.blocks:
             blk.H, blk.W = H, W
-            if not torch.jit.is_scripting() and self.use_checkpoint:
+            if not torch.jit.is_scripting() and self.use_checkpoint:  # type: ignore[attr-defined]
                 x = checkpoint.checkpoint(blk, x, attn_mask)
             else:
                 x = blk(x, attn_mask)
@@ -702,7 +706,7 @@ class Swin_BM_RGBT(nn.Module):
         # `det_adaptor` maps fused UNet/backbone features to the detection head input channels.
         # By default it's identity so attaching a head with matching channels is trivial.
         self.det_adaptor = nn.Identity()
-        self.det_head = None
+        self.det_head: Optional[nn.Module] = None
 
         if pre_train:
             # Attempt to load pretrained weights if paths are configured and files exist.
@@ -764,7 +768,7 @@ class Swin_BM_RGBT(nn.Module):
         # multi-scale features (r + t + b) as the input to the detection adaptor
         # + head. This aligns detection with the same fused features used for
         # counting and tests multi-scale context for Phase 6.3.
-        if getattr(self, 'det_head', None) is not None:
+        if self.det_head is not None:
             # adapted features come from the full feature fusion path
             adapted_feats = self.det_adaptor(features)
             try:
@@ -785,7 +789,7 @@ class Swin_BM_RGBT(nn.Module):
             return density, features
         return density
 
-    def attach_det_head(self, head: nn.Module, adaptor: nn.Module = None):
+    def attach_det_head(self, head: nn.Module, adaptor: Optional[nn.Module] = None):
         """Attach a detection head and optional adaptor to this model.
 
         The adaptor maps fused UNet/backbone features to the head's expected
