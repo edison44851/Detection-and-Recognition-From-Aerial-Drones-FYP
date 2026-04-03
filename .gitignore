@@ -26,3 +26,5 @@ edison_commit_changes/
 git_history_file_action_counts.csv
 visuals_thermal_only/
 visuals_detection_masked_phase3/
+fake_thermal_dataset_integrator.py
+*Report

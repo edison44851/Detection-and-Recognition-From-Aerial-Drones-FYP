@@ -1,590 +1,122 @@
 # Detection and Recognition From Aerial Drones
 
-This repository is a final-year project (FYP) of graduates at the City University of Hong Kong (CityUHK), supervised by [Prof. Chun Pong LAU](https://scholars.cityu.edu.hk/en/persons/cplau27/). The project aims to develop a robust and efficient solution for detecting and recognizing individuals from aerial RGBT imagery using drones.
+This repository contains a City University of Hong Kong (CityUHK) final-year project on RGB-T (RGB + Thermal) aerial human detection and counting.
 
-The base of this project is built upon the CVPR2025 paper [Free Lunch Enhancements for Multi-modal Crowd Counting](https://github.com/HenryCilence/Free-Lunch-Multimodal-Counting) codebase (Meng et al., 2025). It builds on the original implementation and adds a **CenterNet-style keypoint detection branch** with FPN multi-scale architecture for aerial RGBT imagery.
+The implementation extends the CVPR 2025 Free-Lunch multimodal counting framework with a CenterNet-style keypoint detection head for small-object localization in drone imagery.
 
 ![Model Architecture](image/FYP-High-level.png "Model Architecture")
 
-## Quick Navigation
+## Project Status
 
-### 📖 **Documentation** (Recommended Reading Order)
-
-1. **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System design and components
-   - U-Net broker, Swin backbone, CenterNet detection head
-   - Feature extraction options (full vs broker-only)
-   - Inference pipeline and evaluation modes
-
-2. **[DEVELOPMENT.md](docs/DEVELOPMENT.md)** — Development timeline (Phases 1-6)
-   - Complete evolution from baseline → Phase 6.5
-   - What worked, what failed, and why
-   - Key findings and lessons per phase
-
-3. **[TRAINING.md](docs/TRAINING.md)** — How to train
-   - Recommended configurations (Phase 6.5, lightweight, multi-scale)
-   - Dataset-specific setups (DroneRGBT, RGBT-CC)
-   - Hyperparameter tuning, troubleshooting, reproducibility
-
-4. **[INFERENCE.md](docs/INFERENCE.md)** — How to evaluate
-   - Three evaluation modes (RAW, TILES, ORIG) explained
-   - Parameter tuning (score threshold, NMS radius)
-   - Output analysis and metrics interpretation
-
-5. **[KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)** — What NOT to do
-   - Phase 4 analysis: 6 problematic features and why they're disabled
-   - Verification script to check your setup
-   - Correct alternatives for FP reduction
-
-6. **[LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md)** — Key insights
-   - Why stride-4, 2-layer heads, and heatmap bias matter
-   - Why simple fusion beats complex; why theory guides design
-   - Principles for future work
-
-### ⚡ **Quick Links**
-
-- [Current Status](#current-status-2026-02-08) — Latest checkpoint and metrics
-- [Quick Start](#quick-start) — Single-command training
-- [Getting Started](#getting-started) — Setup, datasets, and verification
-- [Training Examples](#training--inference-guide) — Copy-paste configurations
-- [Datasets](#datasets) — Dataset details and results
-- [Troubleshooting](#troubleshooting) — Common issues and fixes
-
----
-
-## Contents
-
-- Current Status
-- Quick Start
-- Training & Inference Guide
-- Datasets
-- Troubleshooting
-- Citation & Acknowledgments
-- Future Work
-
-## Repository Layout
-
-- [baselines/](baselines/) — scripts for fine-tuning and evaluating baseline models.
-- [docs/](docs/) — markdown notes that record ideas and development phases.
-- [Fine-tune/](Fine-tune/) — main codebase adapted for the new CenterHead; originally inherited from the Free-Lunch repo but heavily refactored and modified.
-- [PPCA/](PPCA/) — inherited from the Free-Lunch repo with no local changes.
-- [image/](image/) — images used in markdown documentation.
-- [tools/](tools/) — standalone utilities; each script has its own usage and should be run independently.
-
-## Current Status (2026-02-08)
-- **✅ Phase 6.5 Adopted**: Better Bias Initialization (-4.6→-2.0) - **KEPT despite lower RAW/TILES AP**
-- **Rationale**: Better TP confidence distribution (more balanced, not concentrated <50% quadrant) + significantly improved ORIG mode (+14.5% AP)
-- **Current Best Checkpoint**: `checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth` (AP=0.5622 RAW, 0.5281 TILES, 0.4502 ORIG)
-- **AP@15px (Phase 6.5)**: RAW 0.7148, TILES 0.6669, ORIG 0.5590 (more tolerant TP matching)
-- **Best RAW AP@8px**: Phase 6.3 Full Features (AP=0.5908, P=0.5642, R=0.7009, F1=0.6251)
-- **Previous Checkpoint (Phase 6.3)**: `checkpoints_phase6/phase6.3_full_features/best_model_epoch_40.pth` (AP=0.5908 RAW, 0.5622 TILES, 0.3932 ORIG) - archived
-- **❌ Phase 6.4 Failed & Reverted**: Better Adaptor (3×3+3×3+1×1) caused catastrophic failure (AP dropped 97%, massive overfitting)
-- **Key Trade-off**: Accepted -4.8%/-6.1% RAW/TILES AP reduction for better confidence calibration and +14.5% ORIG improvement
+- Project complete (April 2026)
+- Standard evaluation metric: AP@8px (distance-based)
+- Best AP checkpoint for benchmark comparison: `phase6_3_best_model_epoch_40.pth`
+- Adopted deployment-oriented checkpoint: `phase6_5_best_model_epoch_68.pth`
+- Model on Hugging Face: [Edison2525/Detection-and-Recognition-From-Aerial-Drones-FYP](https://huggingface.co/Edison2525/Detection-and-Recognition-From-Aerial-Drones-FYP)
 
 ## Quick Start
 
-We strongly recommend using the convenience launcher `tools/train_entry.sh` for training. It wraps `torchrun` safely, sets sensible defaults, and forwards extra flags to `Fine-tune/train.py`.
+### 1) Environment and Data
 
-## Getting Started
+Follow the full setup instructions in [docs/SETUP.md](docs/SETUP.md).
 
-### 1. Clone the Repository
-```bash
-git clone <repository-url>
-cd FYP
-```
+### 2) Visual Inference (AP@8px)
 
-### 2. Download Datasets
+Phase 6.3 (best AP benchmark checkpoint):
 
-#### DroneRGBT Dataset
-- **Source**: [DroneRGBT Official Repository](https://github.com/VisDrone/DroneRGBT)
-- **Structure after download**:
-  ```
-  .data/DroneRGBT/
-  ├── Train/
-  │   ├── RGB/              # RGB images
-  │   ├── Infrared/        # Thermal images (named *R.jpg)
-  │   └── GT_/             # XML annotation files (named *R.xml)
-  └── Test/
-      ├── RGB/
-      ├── Infrared/
-      └── GT_/
-  ```
-
-#### RGBT-CC Dataset
-- **Source**: [RGBT-CC Official Repository](https://github.com/chen-judge/RGBTCrowdCounting)
-- **Structure after download**:
-  ```
-  .data/RGBT-CC/
-  ├── train/               # *_RGB.jpg, *_T.jpg, *_GT.json
-  ├── val/                 # Validation split
-  └── test/                # *_RGB.jpg, *_T.jpg, *_GT.json
-  ```
-
-### 3. Download Pretrained Weights
-
-This project extends the **Free-Lunch multimodal counting** framework:
-- **Source**: [Free-Lunch Repository](https://github.com/HenryCilence/Free-Lunch-Multimodal-Counting)
-- **Required files**: Pretrained backbone weights for Swin Transformer
-- Download and place in `checkpoints/` directory (weights are automatically loaded during training if backbone is frozen)
-
-Project checkpoints are hosted on Hugging Face:
-- **Hugging Face**: https://huggingface.co/Edison2525/Detection-and-Recognition-From-Aerial-Drones-FYP
-
-**Current best checkpoint** (Phase 6.5):
-- Located at: `checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth`
-- Use with `--resume` flag to fine-tune from this checkpoint
-
-### 4. Convert Datasets to Internal Format
-
-Convert raw datasets to the flat `*_RGB.jpg`, `*_T.jpg`, `*_GT.npy` format used by our training pipeline.
-
-#### DroneRGBT Conversion
-```bash
-python3 tools/convert_dronergbt.py \
-  --src-root .data/DroneRGBT \
-  --out-root .data/DroneRGBT_converted
-```
-**Output**: 
-- `.data/DroneRGBT_converted/train/` — Training images + annotations
-- `.data/DroneRGBT_converted/test/` — Test images + annotations
-- Each image generates: `{id}_RGB.jpg`, `{id}_T.jpg`, `{id}_GT.npy`
-
-#### RGBT-CC Conversion
-```bash
-python3 tools/convert_rgbtcc.py \
-  --src-root .data/RGBT-CC \
-  --out-root .data/RGBT-CC_converted
-```
-**Output**:
-- `.data/RGBT-CC_converted/train/`, `.../val/`, `.../test/` — All splits converted
-- Same file naming scheme as DroneRGBT
-
-### 5. Compute Thermal Image Statistics (RGBT-CC Only)
-
-Thermal images require normalization for consistent training. Compute per-channel mean and standard deviation:
-
-```bash
-# Compute stats for training split
-python3 tools/compute_thermal_stats.py \
-  --data-dir .data/RGBT-CC_converted \
-  --split train
-```
-
-**Expected output**:
-```
-Computing thermal statistics for .data/RGBT-CC_converted/train/
-Mean: [0.492, 0.168, 0.430]
-Std: [0.317, 0.174, 0.191]
-```
-
-Use `--all-splits` to compute for train/val/test simultaneously:
-```bash
-python3 tools/compute_thermal_stats.py \
-  --data-dir .data/RGBT-CC_converted \
-  --all-splits
-```
-
-**Configuration**: Add to training config with `--thermal-mean` and `--thermal-std` flags to normalize thermal images during preprocessing.
-
-### 6. Verify Setup (Optional but Recommended)
-
-Run a quick sanity check to validate your training pipeline is working:
-
-#### Quick Training Dry-Run
-```bash
-python3 tools/quick_train_check.py
-```
-**Purpose**: 
-- Loads trainer with minimal configuration
-- Replaces dataset with 2-sample subset
-- Validates `trainer.setup()` succeeds without errors
-- **Output**: Success/failure message; if successful, you can run full training
-
-#### Verify Detection Head Score Ranges
-```bash
-python3 tools/verify_score_fix.py
-```
-**Purpose**:
-- Detects if score compression bug exists (Phase 4 issue)
-- Validates heatmap scores are properly in [0, 1] range
-- **Output**: Score statistics (min/max/mean) and pass/fail status
-- Useful after any detection head changes
-
----
-
-## Training & Inference Guide
-
-### Training Examples
-
-**Recommended: Phase 6.5 Configuration (Best Checkpoint - Current Standard)**
-
-Train detection with Phase 6.5 configuration (balanced confidence calibration, +14.5% ORIG mode AP):
-```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --save-dir ./checkpoints_phase6 \
-  --nproc 4 --device 0,1,2,3 \
-  --batch-size 4 --max-epoch 100 -- \
-  --task detection \
-  --keypoint-mode --fixed-box-size 16 \
-  --use-fpn --use-deconv --head-conv 256 \
-  --det-sigma 0.8 --focal-alpha 0.75 --focal-gamma 2.5 \
-  --det-pos-weight 1.0 --det-neg-topk-ratio 0.1 \
-  --eval-nms-radius 2.0 --head-lr 0.002 \
-  --freeze-backbone --freeze-unet --freeze-counter \
-  --resume checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth
-```
-**Note:** Heatmap bias is initialized to -2.0 (Phase 6.5) for better TP confidence distribution. Remove `--resume` for fresh training from scratch.
-
-**Single-GPU Training (Memory-Constrained):**
-```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --save-dir ./checkpoints_phase6 \
-  --nproc 1 --device 0 \
-  --batch-size 1 --max-epoch 100 -- \
-  --task detection --keypoint-mode \
-  --use-fpn --use-deconv --head-conv 256 \
-  --det-sigma 0.8 --focal-alpha 0.75 --focal-gamma 2.5 \
-  --freeze-backbone --freeze-unet --freeze-counter
-```
-**Note:** Batch size 1 is slower but works on single GPU. Consider reducing `--max-epoch` if training time is limited.
-
-**RGBT-CC Training (with Multi-Scale Augmentation):**
-```bash
-tools/train_entry.sh \
-  --data-dir .data/RGBT-CC_converted \
-  --save-dir ./checkpoints_phase6_rgbt_cc \
-  --nproc 4 --device 0,1,2,3 \
-  --batch-size 4 --max-epoch 100 -- \
-  --task detection --keypoint-mode \
-  --use-fpn --use-deconv --head-conv 256 \
-  --det-sigma 0.8 --focal-alpha 0.75 --focal-gamma 2.5 \
-  --aug-scale-min 0.5 --aug-scale-max 2.0 \
-  --aug-flip 1 --thermal-clahe 1 \
-  --det-pos-weight 1.0 --det-neg-topk-ratio 0.1 \
-  --freeze-backbone --freeze-unet --freeze-counter
-```
-**Note:** RGBT-CC has extreme scale variation (5×5 to 100×100 px); augmentation is essential. CLAHE thermal preprocessing improves contrast.
-
-**Counting-Only Training (Baseline):**
-```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --save-dir ./checkpoints_counting \
-  --nproc 4 --device 0,1,2,3 \
-  --batch-size 4 --max-epoch 100 -- \
-  --task counting
-```
-**Note:** Remove `--task detection` flags; only trains density estimation branch.
-
-### Inference & Evaluation
-
-**Visualize Detection Outputs (Phase 6.5 Checkpoint):**
 ```bash
 python3 Fine-tune/test_detection_vis.py \
+  --ckpt phase6_3_best_model_epoch_40.pth \
   --data-dir .data/DroneRGBT_converted \
-  --ckpt checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth \
-  --out ./visuals_phase6 \
-  --num 1806 \
-  --num-vis 64 \
-  --batch-size 8 \
-  --num-workers 4 \
-  --keypoint-mode --fixed-box-size 16 \
-  --use-fpn --use-deconv --head-conv 256
+  --num 64 \
+  --use-deconv \
+  --use-fpn \
+  --keypoint-mode \
+  --use-bce-logits \
+  --det-use-gn \
+  --head-conv 256
 ```
-**Parameters:**
-- `--num`: Total images to evaluate (1806 for full DroneRGBT test set)
-- `--num-vis`: Subset to visualize with overlays (64 for detailed analysis; saves 95%+ preprocessing time)
-- `--batch-size`: Larger values faster (8 default); reduce if OOM
-- `--keypoint-mode`: Match training config exactly
 
-**Comprehensive Diagnostics (RAW/TILES/ORIG Modes with Grid Search):**
+### 3) Full Diagnostics
+
 ```bash
 bash tools/run_posttrain_diagnostics.sh \
-  checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth \
+  phase6_3_best_model_epoch_40.pth \
   .data/DroneRGBT_converted
 ```
-OR for custom output directory:
-```bash
-bash tools/run_posttrain_grid.sh \
-  checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth \
-  .data/DroneRGBT_converted \
-  .tmp_posttrain_phase6_results \
-  1806 4
-```
-**Output includes:**
-- Three inference modes (RAW: no NMS, TILES: tiled inference, ORIG: full-image)
-- Per-mode parameter sweeps (score thresholds, NMS radii, tile sizes)
-- Detection overlays (RGB+Thermal with bounding boxes)
-- Per-prediction CSVs (image_id, score, is_TP, gt_distance)
-- TP/FP histograms for threshold tuning
-- Aggregate metrics (AP, F1, precision, recall)
-
-**Verify Counting Stability (Ensure Detection Training Preserves Counting):**
-```bash
-python3 Fine-tune/test_game.py \
-  --data-dir .data/DroneRGBT_converted \
-  --ckpt checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth
-```
-**Expected:** GAME/MAE metrics match Phase 6.5 baseline (counting head frozen, should not degrade).
-
-📖 See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for complete phase timeline and [ARCHITECTURE.md](docs/ARCHITECTURE.md) for comprehensive system design and architecture diagrams.
-
-## Datasets
-
-This project uses two RGBT (RGB + Thermal) datasets for training and evaluation:
-
-### DroneRGBT Dataset
-- **Characteristics**: Relatively consistent scale (drone altitude stable)
-- **Best Performance**: F1 = 0.608 with current Phase 6.5 configuration
-- **Recommended for**: Initial experiments and validation
-- **Preparation**: Use `tools/convert_dronergbt.py` (see [Getting Started](#getting-started) step 4)
-
-### RGBT-CC Dataset (CVPR 2021)
-- **Characteristics**: Extreme scale variation (5×5 to 100×100 pixels), high object density
-- **Challenge**: Lower thermal quality (requires CLAHE preprocessing via `--thermal-clahe 1`)
-- **Preparation**: Use `tools/convert_rgbtcc.py` + thermal stats computation (see [Getting Started](#getting-started))
-- **Augmentation**: Requires aggressive augmentation (`--aug-scale-min 0.5 --aug-scale-max 2.0`) for generalization
-
-#### DroneRGBT Results (Phase 6.5)
-
-| Mode | Precision | Recall | F1 | AP | Notes |
-|---:|---:|---:|---:|---:|---|
-| RAW | 0.7542 | 0.5627 | 0.6472 | 0.5622 | No NMS |
-| TILES | 0.7387 | 0.5333 | 0.6222 | 0.5281 | Tiled inference, NMS r=2 |
-| ORIG | 0.6891 | 0.4801 | 0.5667 | 0.4502 | Full-image, NMS r=2 |
-
-**AP@15px** (8px tolerance): RAW 0.7148, TILES 0.6669, ORIG 0.5590
-
-#### RGBT-CC Results (Phase 6.5)
-
-| Mode | Precision | Recall | F1 | AP | Notes |
-|---:|---:|---:|---:|---:|---|
-| RAW | 0.7152 | 0.4659 | 0.5642 | 0.4407 | No NMS |
-| TILES | 0.9129 | 0.3662 | 0.5227 | 0.3557 | Tiled inference, NMS r=4 |
-| ORIG | 0.9511 | 0.2842 | 0.4376 | 0.2792 | Full-image, NMS r=4 |
-
-**Note**: High precision on ORIG/TILES indicates conservative score thresholding; RAW mode shows better recall but lower precision.
-
----
-
-## Baseline Model Comparison (AP@8px)
-
-To provide fair comparison with external baseline models (Faster RCNN, RetinaNet, YOLO26s), we evaluate Phase 6.3 at AP@8px (stricter distance threshold aligned with internal evaluation). For baseline comparison, detections are evaluated as 16px x 16px bounding boxes, and IoU >= 0.2641 is counted as a hit.
-
-**AP computation in this section:** all AP@8px values are computed from PR curves using all-point interpolation (precision-envelope integration) for cross-model consistency.
-
-Inference settings:
-- **All models**: Min score = 0.1 (RAW mode)
-- **Baselines**: NMS IoU = 0.15 (suppresses boxes ~7.83 pixels apart)
-- **Phase 6.3 (default)**: 3×3 max-pooling NMS (~4-8 pixel suppression)
-- **Phase 6.3 (fair comparison)**: Radius NMS = 7.0 (comparable to baseline suppression range)
-
-IoU threshold calculation for 16x16 boxes with 8px Euclidean center-distance target:
-- Let center offset be `(dx, dy)` with `sqrt(dx^2 + dy^2) = 8`.
-- Use isotropic offset (`dx = dy = 8 / sqrt(2) = 5.657`) to convert radial tolerance to box overlap.
-- Overlap width/height: `16 - 5.657 = 10.343`.
-- Intersection area: `I = 10.343^2 = 106.98`.
-- Union area: `U = 2 * 16^2 - I = 512 - 106.98 = 405.02`.
-- IoU: `I / U = 106.98 / 405.02 = 0.2641`.
-
-Hence, for 16x16 boxes, IoU `0.2641` is used as the box-based equivalent of an 8px Euclidean center-distance target under the isotropic-offset assumption.
-
-**NMS threshold calculation for 16x16 boxes with isotropic offset:**
-- Given IoU = 0.15, find Euclidean center-distance using isotropic offset (same method as AP@8px).
-- IoU = I / (512 - I) where I = (16 - dx)^2 (dx = per-axis center distance).
-- 0.15 = I / (512 - I) → 0.15 × (512 - I) = I → 76.8 = 1.15 × I → I = 66.78.
-- (16 - dx)^2 = 66.78 → 16 - dx = √66.78 = 8.172 → dx = 7.828.
-- Euclidean distance d = dx × √2 = 7.828 × 1.414 ≈ 11.07 pixels.
-
-Therefore, baseline NMS with IoU = 0.15 suppresses overlapping detections with centers ~11.07px apart (Euclidean), which is more lenient than the AP@8px matching threshold (IoU = 0.2641).
-
-**Why 16x16 boxes?** This is small object detection with typical object sizes of 8-20px pixels (see [LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md)). A small adjustment from 15x15 to 16x16 keeps boxes realistic while aligning IoU matching with AP@8px distance tolerance.
-
-### Computing AP and PR Curves
-
-To reproduce or extend these baseline comparisons, use the [tools/calculate_ap_pr_curve.py](tools/calculate_ap_pr_curve.py) utility:
-
-**For baseline JSON evaluation files (Detectron2, YOLO):**
-```bash
-python3 tools/calculate_ap_pr_curve.py --json path/to/evaluation_metrics.json
-```
-
-**For Phase model CSV scores:**
-```bash
-python3 tools/calculate_ap_pr_curve.py --csv path/to/scores.csv --gt-count 54391
-```
-
-**Compare multiple models and generate PR-curve plot:**
-```bash
-python3 tools/calculate_ap_pr_curve.py \
-  --compare baseline1.json baseline2.json phase_scores.csv \
-  --names "YOLO26s RGB" "YOLO26s Thermal" "Phase 6.3" \
-  --plot pr_comparison.png
-```
-
-**Save results to JSON for further analysis:**
-```bash
-python3 tools/calculate_ap_pr_curve.py \
-  --csv scores.csv --gt-count 54391 \
-  --output-json results.json
-```
-
-The script automatically detects input format (JSON vs CSV) and computes AP using **all-point interpolation** (COCO-standard precision-envelope method) for consistent cross-model evaluation. See the script's docstring for full CLI options.
-
-### Quantitative Results
-
-| Model | Modality | AP@8px | Precision | Recall | F1 | Notes |
-|-------|----------|--------|-----------|--------|-----|-------|
-| **Phase 6.3 (NMS r=7)** | **RGBT** | **0.7018** | **0.7868** | 0.7204 | **0.7521** | Comparable NMS to baselines |
-| Faster RCNN | RGB | 0.0402 | 0.4776 | 0.5000 | 0.4885 | Detectron2 baseline |
-| RetinaNet | RGB | 0.0547 | 0.4910 | 0.5324 | 0.5109 | Detectron2 baseline |
-| YOLO26s | RGB | 0.3259 | 0.5115 | 0.5320 | 0.5216 | Ultralytics baseline |
-| Faster RCNN | Thermal | 0.0992 | 0.7337 | 0.5323 | 0.6170 | Better than RGB |
-| RetinaNet | Thermal | 0.1380 | 0.6945 | 0.6307 | 0.6611 | 1.4× better AP than Faster R-CNN |
-| YOLO26s | Thermal | 0.6210 | 0.6685 | **0.8111** | 0.7329 | Best single-modal baseline |
-
-### Key Findings
-
-1. **Multi-modal Superiority with Fair NMS**: Phase 6.3 (RGBT fusion) achieves **1.13× higher AP** than YOLO26s Thermal (0.7018 vs 0.6210)—the best single-modal baseline—and **5.1× higher AP** than RetinaNet Thermal (0.1380) when using comparable NMS suppression ranges. Multi-modal fusion fundamentally outperforms single-modal approaches.
-2. **NMS Robustness**: Stronger NMS (radius=7.0) **improves** Phase 6.3 performance (+18.8% AP, +11.3% F1), proving the advantage stems from superior feature learning rather than lenient duplicate suppression.
-3. **Confidence Calibration Matters**: At the interpolation operating point, Phase 6.3 shows **strong confidence ranking** (precision 0.7868, recall 0.7204, F1 0.7521), while YOLO26s Thermal attains higher recall (0.8111, +0.0907) with lower precision (0.6685). Despite this recall trade-off, Phase 6.3 still achieves the best F1 by **+0.0192** (0.7521 vs 0.7329). Detectron2 models still exhibit AP collapse despite reasonable single-threshold F1 scores (Faster R-CNN Thermal: F1=0.62, AP=0.099; RetinaNet Thermal: F1=0.66, AP=0.138).
-4. **Thermal Modality Advantage**: Thermal consistently outperforms RGB across all baselines (Faster RCNN: 2.5×, RetinaNet: 2.5×, YOLO26s: 1.9× AP improvement), validating thermal imaging importance for aerial crowd detection.
-5. **Architecture-Dependent Performance**: YOLO26s Thermal (AP=0.6210) dramatically outperforms Detectron2 models (RetinaNet: 0.1380, Faster R-CNN: 0.0992), suggesting anchor-free approaches better suit small-object aerial detection than anchor-based methods.
-6. **Deployment Flexibility & Robustness**: Phase 6.3 can adjust NMS post-deployment, and its superior AP indicates better confidence ranking across all thresholds—critical for adaptive systems where optimal thresholds may change per deployment scenario.
-
-### Visual Comparisons
-
-Below are example detections from baseline models on test images (AP@15px RAW mode evaluation). For Detectron2 models, green boxes are ground truths and other colors are predictions. For YOLO26s, blue boxes are predictions with no ground truths shown. For our method, blue crosses are ground truths, red circles are false positives, and green circles are true positives.
-
-#### Faster RCNN (Detectron2)
-| RGB Inference | Thermal Inference |
-|---------------|-------------------|
-| ![Faster RCNN RGB - Image 6](image/compare/detectron2-faster-rcnn-fpn-3x/6_comparison.jpg) | ![Faster RCNN Thermal - Image 6](image/compare/detectron2-faster-rcnn-fpn-3x/6R_comparison.jpg) |
-| ![Faster RCNN RGB - Image 30](image/compare/detectron2-faster-rcnn-fpn-3x/30_comparison.jpg) | ![Faster RCNN Thermal - Image 30](image/compare/detectron2-faster-rcnn-fpn-3x/30R_comparison.jpg) |
-| ![Faster RCNN RGB - Image 117](image/compare/detectron2-faster-rcnn-fpn-3x/117_comparison.jpg) | ![Faster RCNN Thermal - Image 117](image/compare/detectron2-faster-rcnn-fpn-3x/117R_comparison.jpg) |
-| ![Faster RCNN RGB - Image 1206](image/compare/detectron2-faster-rcnn-fpn-3x/1206_comparison.jpg) | ![Faster RCNN Thermal - Image 1206](image/compare/detectron2-faster-rcnn-fpn-3x/1206R_comparison.jpg) |
-
-*Note: Faster R-CNN achieves moderate recall (50% RGB, 53% Thermal) but suffers from low AP@8px (0.040 RGB, 0.099 Thermal), indicating moderate confidence calibration issues—better than initially reported but still significantly trailing YOLO26s.*
-
-#### RetinaNet (Detectron2)
-| RGB Inference | Thermal Inference |
-|---------------|-------------------|
-| ![RetinaNet RGB - Image 6](image/compare/detectron2-retinanet-fpn-1x/6_comparison.jpg) | ![RetinaNet Thermal - Image 6](image/compare/detectron2-retinanet-fpn-1x/6R_comparison.jpg) |
-| ![RetinaNet RGB - Image 30](image/compare/detectron2-retinanet-fpn-1x/30_comparison.jpg) | ![RetinaNet Thermal - Image 30](image/compare/detectron2-retinanet-fpn-1x/30R_comparison.jpg) |
-| ![RetinaNet RGB - Image 117](image/compare/detectron2-retinanet-fpn-1x/117_comparison.jpg) | ![RetinaNet Thermal - Image 117](image/compare/detectron2-retinanet-fpn-1x/117R_comparison.jpg) |
-| ![RetinaNet RGB - Image 1206](image/compare/detectron2-retinanet-fpn-1x/1206_comparison.jpg) | ![RetinaNet Thermal - Image 1206](image/compare/detectron2-retinanet-fpn-1x/1206R_comparison.jpg) |
-
-*Note: RetinaNet achieves better thermal performance (AP@8px 0.1380) than Faster R-CNN (0.0992), with balanced precision (69%) and recall (63%), but both Detectron2 models significantly trail YOLO26s Thermal (AP 0.6210) by 4-6×.*
-
-#### YOLO26s
-| RGB Inference | Thermal Inference |
-|---------------|-------------------|
-| ![YOLOv2 RGB - Image 6](image/compare/yolov26s/6.jpg) | ![YOLOv2 Thermal - Image 6](image/compare/yolov26s/6R.jpg) |
-| ![YOLOv2 RGB - Image 30](image/compare/yolov26s/30.jpg) | ![YOLOv2 Thermal - Image 30](image/compare/yolov26s/30R.jpg) |
-| ![YOLOv2 RGB - Image 117](image/compare/yolov26s/117.jpg) | ![YOLOv2 Thermal - Image 117](image/compare/yolov26s/117R.jpg) |
-| ![YOLOv2 RGB - Image 1206](image/compare/yolov26s/1206.jpg) | ![YOLOv2 Thermal - Image 1206](image/compare/yolov26s/1206R.jpg) |
-
-*Note: YOLO26s Thermal emerges as the best single-modal baseline (AP@8px 0.6210), achieving high recall (81%) with reasonable precision (67%). However, Phase 6.3's RGBT fusion still surpasses it by 13% AP, demonstrating multi-modal advantages.*
-
-#### Phase 6.5 (Ours) - RGBT Fusion at AP@15px
-| RGBT Joint Inference |
-|----------------------|
-| ![Phase 6.5 AP15 - Image 6](image/compare/phase6.5_AP15/6.jpg) |
-| ![Phase 6.5 AP15 - Image 30](image/compare/phase6.5_AP15/30.jpg) |
-| ![Phase 6.5 AP15 - Image 117](image/compare/phase6.5_AP15/117.jpg) |
-| ![Phase 6.5 AP15 - Image 1206](image/compare/phase6.5_AP15/1206.jpg) |
-
-*Note: Phase 6.5 processes RGB and Thermal images simultaneously through multi-modal fusion, achieving balanced precision (0.65) and recall (0.80) with AP 0.7148—significantly outperforming all single-modal baselines.*
-
-#### Phase 6.5 AP@15px Inference Modes (RAW vs TILES vs ORIG)
-
-| Mode | AP@15px | Precision | Recall | F1 | Notes |
-|------|---------|-----------|--------|-----|-------|
-| **RAW** | **0.7148** | **0.6481** | **0.8035** | **0.7175** | Full image, no tiling |
-| **TILES** | **0.6669** | **0.7819** | **0.7382** | **0.7594** | Overlapping tiles + merge |
-| **ORIG** | **0.5590** | **0.8587** | **0.6076** | **0.7117** | Legacy thresholds |
-
-| Mode | Image 6 | Image 30 |
-|------|---------|----------|
-| RAW | ![Phase 6.5 AP15 RAW - Image 6](image/compare/phase6.5_AP15/6.jpg) | ![Phase 6.5 AP15 RAW - Image 30](image/compare/phase6.5_AP15/30.jpg) |
-| TILES | ![Phase 6.5 AP15 TILES - Image 6](image/compare/phase6.5_AP15/tiles/6.jpg) | ![Phase 6.5 AP15 TILES - Image 30](image/compare/phase6.5_AP15/tiles/30.jpg) |
-| ORIG | ![Phase 6.5 AP15 ORIG - Image 6](image/compare/phase6.5_AP15/orig/6.jpg) | ![Phase 6.5 AP15 ORIG - Image 30](image/compare/phase6.5_AP15/orig/30.jpg) |
-
-| Mode | Image 117 | Image 1206 |
-|------|-----------|------------|
-| RAW | ![Phase 6.5 AP15 RAW - Image 117](image/compare/phase6.5_AP15/117.jpg) | ![Phase 6.5 AP15 RAW - Image 1206](image/compare/phase6.5_AP15/1206.jpg) |
-| TILES | ![Phase 6.5 AP15 TILES - Image 117](image/compare/phase6.5_AP15/tiles/117.jpg) | ![Phase 6.5 AP15 TILES - Image 1206](image/compare/phase6.5_AP15/tiles/1206.jpg) |
-| ORIG | ![Phase 6.5 AP15 ORIG - Image 117](image/compare/phase6.5_AP15/orig/117.jpg) | ![Phase 6.5 AP15 ORIG - Image 1206](image/compare/phase6.5_AP15/orig/1206.jpg) |
-
-### Threshold Impact Analysis (Phase 6.5)
-
-Our model's performance at different distance thresholds:
-
-| Threshold | TP | FP | FN | Precision | Recall | AP | Use Case |
-|-----------|----|----|----|-----------|---------|----|----------|
-| **8px (Strict)** | 38,038 | 29,394 | 16,353 | 0.5641 | 0.6993 | 0.5622 | Internal evaluation, high precision requirements |
-| **15px (Lenient)** | 43,705 | 23,727 | 10,686 | 0.6481 | 0.8035 | 0.7148 | Fair baseline comparison, standard detection protocols |
-| **Delta** | +5,667 | -5,667 | -5,667 | +0.0840 | +0.1042 | +0.1526 | 27% AP improvement with relaxed matching |
-
-The 15px threshold better reflects practical deployment scenarios where exact pixel-perfect localization is less critical than robust detection, while the 8px threshold provides stringent internal evaluation for model development.
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-**1. Checkpoint loading errors ("missing/unexpected keys")**
-- DDP checkpoints have `module.` prefix; inference strips it automatically
-- Use `strict=False` loading for partial weight initialization
-- Verify `--keypoint-mode` matches training config
-
-**2. Low precision / high false positives**
-- Try `--eval-nms-radius 2.0` (tighter suppression)
-- Increase `--det-neg-topk-ratio 0.1` (harder negative mining)
-- Enable `--boundary-suppress` and `--adaptive-threshold`
-- Check `scores.csv` histograms to tune score threshold
-
-**3. Training instability / NaN loss**
-- **See `Training Stability & Reproducibility`** for stability features (gradient clipping, NaN/Inf detection, background suppression).
-- Reduce `--head-lr` if gradients explode
-- Enable `--det-use-gn` for small-batch training
-
-**4. Out of memory (OOM)**
-- Reduce `--batch-size` (try 1 per GPU)
-- Keep backbone frozen (`--freeze-backbone`)
-- Disable FPN (`--use-fpn 0`) for memory-constrained setups
-
-**5. Results differ from expected**
-- Verify `--downsample-ratio 4` (not 8, this is critical!)
-- Check all hyperparameters match teammate's config
-- Ensure NMS radius matches evaluation settings
-- Review gradient clipping and NaN detection are active
-
-## Documentation & Development
-
-- **Implementation notes**: `.plan/extension_progress.md` (recent updates and results)
-- **Design rationale**: `.plan/extension_plan.md` (architecture decisions and future work)
-- **Reproducibility**: All experiments documented with exact commands and metrics
-- **Codebase structure**:
-  - `Fine-tune/models/detection/`: CenterHead, FPN, detection wrapper
-  - `Fine-tune/datasets/`: Dataset loaders and augmentation
-  - `Fine-tune/utils/`: Trainer, evaluation, detection metrics
-  - `tools/`: Training launchers, diagnostics, data conversion
-
-## Citation & Acknowledgments
-
-This fork extends the Free-Lunch multimodal counting framework with keypoint detection capabilities for aerial RGBT imagery. Critical stability fixes and hyperparameter tuning contributed by project teammates.
-
-Final year project (FYP) at City University of Hong Kong, 2026.
-
-## Future Work
-
-- [ ] Validate RGBT-CC augmentation and thermal preprocessing
-- [ ] Explore backbone unfreezing for higher AP
-- [ ] Multi-dataset training and cross-domain evaluation
-- [ ] Real-time inference optimization
-- [ ] Bounding box prediction (if future datasets provide box annotations)
-
-For feature requests, open an issue with detailed requirements and use case description.
+
+## AP@8px Results Summary
+
+### DroneRGBT (Main Dataset)
+
+| Model / Mode | AP@8px | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|
+| Phase 6.3 (RAW) | 0.5908 | 0.5642 | 0.7009 | 0.6252 |
+| Phase 6.3 (Fair NMS r=11.07) | **0.7018** | **0.7868** | 0.7204 | **0.7521** |
+| Phase 6.5 (RAW) | 0.5622 | 0.5641 | 0.6993 | 0.6245 |
+| YOLO26s (Thermal baseline) | 0.6210 | 0.6685 | **0.8111** | 0.7329 |
+| RetinaNet (Thermal baseline) | 0.1380 | 0.6945 | 0.6307 | 0.6611 |
+| Faster R-CNN (Thermal baseline) | 0.0992 | 0.7337 | 0.5323 | 0.6170 |
+
+Key takeaways:
+- Phase 6.3 (RGBT fusion) achieves +13% AP vs YOLO26s Thermal baseline.
+- Anchor-free design performs substantially better than anchor-based baselines on small aerial objects.
+
+For full benchmark methodology, derivations, and visual comparisons, see [docs/INFERENCE.md](docs/INFERENCE.md).
+
+## Representative Visual Comparison (AP@8px)
+
+The samples below compare each model's performance on the same scenes (`Image 30` and `Image 117`).
+
+| Model | Image 30 | Image 117 |
+|---|---|---|
+| Faster R-CNN (RGB) | ![FasterRCNN RGB 30](image/compare/detectron2-faster-rcnn-fpn-3x/30_comparison.jpg) | ![FasterRCNN RGB 117](image/compare/detectron2-faster-rcnn-fpn-3x/117_comparison.jpg) |
+| Faster R-CNN (Thermal) | ![FasterRCNN Thermal 30](image/compare/detectron2-faster-rcnn-fpn-3x/30R_comparison.jpg) | ![FasterRCNN Thermal 117](image/compare/detectron2-faster-rcnn-fpn-3x/117R_comparison.jpg) |
+| RetinaNet (RGB) | ![RetinaNet RGB 30](image/compare/detectron2-retinanet-fpn-1x/30_comparison.jpg) | ![RetinaNet RGB 117](image/compare/detectron2-retinanet-fpn-1x/117_comparison.jpg) |
+| RetinaNet (Thermal) | ![RetinaNet Thermal 30](image/compare/detectron2-retinanet-fpn-1x/30R_comparison.jpg) | ![RetinaNet Thermal 117](image/compare/detectron2-retinanet-fpn-1x/117R_comparison.jpg) |
+| YOLO26s (RGB) | ![YOLO26s RGB 30](image/compare/yolov26s/30.jpg) | ![YOLO26s RGB 117](image/compare/yolov26s/117.jpg) |
+| YOLO26s (Thermal) | ![YOLO26s Thermal 30](image/compare/yolov26s/30R.jpg) | ![YOLO26s Thermal 117](image/compare/yolov26s/117R.jpg) |
+
+Ours: Phase 6.3 (RGBT) - Image 30 
+![Ours Phase6.3 30](image/report_ap8/phase6_3_30_nms_1107.jpg)
+Ours: Phase 6.3 (RGBT) - Image 117 
+![Ours Phase6.3 117](image/report_ap8/phase6_3_117_nms_1107.jpg)
+
+Notes:
+- Baseline images show RGB and Thermal modality results from their native pipelines.
+- Our images are report-sourced AP@8px outputs (Phase 6.3 fair-comparison setting).
+- Full quantitative analysis is in [docs/INFERENCE.md](docs/INFERENCE.md).
+
+![PR curve comparison (AP@8px)](image/report_ap8/pr_curves_comparison.png)
+
+## Documentation Map
+
+- [docs/SETUP.md](docs/SETUP.md): Environment setup, dependencies, dataset preparation
+- [docs/TRAINING.md](docs/TRAINING.md): Training configurations and hyperparameter tuning
+- [docs/INFERENCE.md](docs/INFERENCE.md): Evaluation modes, AP@8px metrics, parameter tuning
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): System architecture and model components
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): Phase-by-phase evolution and ablation history
+- [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md): Failed approaches and what to avoid
+- [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md): Design rationale and validated insights
+- [docs/FAQ.md](docs/FAQ.md): Common setup/training/inference questions
+- [docs/TOOLS.md](docs/TOOLS.md): Utility scripts reference
+
+## Repository Layout
+
+- [Fine-tune/](Fine-tune/): Main training and inference code
+- [baselines/](baselines/): Baseline model scripts (Faster R-CNN, RetinaNet, YOLO)
+- [tools/](tools/): Data conversion, diagnostics, and analysis utilities
+- [docs/](docs/): Documentation
+- [image/](image/): Figures and comparison outputs used by docs
+
+## Acknowledgments
+
+- Supervisor: Prof. Chun Pong LAU
+- Base framework: [Free-Lunch Enhancements for Multi-modal Crowd Counting](https://github.com/HenryCilence/Free-Lunch-Multimodal-Counting)
+- Datasets: [DroneRGBT](https://github.com/VisDrone/DroneRGBT), [RGBT-CC](https://github.com/chen-judge/RGBTCrowdCounting)
+
+See team and contribution details in [AUTHORS.md](AUTHORS.md).
+
+## License
+
+Licensed under MIT. See [LICENSE](LICENSE).

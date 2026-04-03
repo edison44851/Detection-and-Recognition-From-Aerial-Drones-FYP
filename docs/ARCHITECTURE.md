@@ -357,7 +357,7 @@ heat, size, offset = center_head(feats)
 ```
 
 **Configuration Flag:**
-- `--use-fpn 1` enables FPN (mandatory in Phase 6.5)
+- `--use-fpn` enables FPN (on by default in `tools/train_entry.sh`)
 - Without FPN, features go directly from adaptor → CenterHead
 
 ### Why FPN is Mandatory
@@ -396,7 +396,7 @@ FPN can be disabled for:
 - **Real-time constraints:** Latency-critical applications where 10% speedup matters
 - **Limited compute:** Edge devices with memory constraints
 
-**To disable:** Set `--use-fpn 0` in training/inference configuration. Note that disabling FPN requires retraining from scratch—pretrained FPN weights cannot be removed at inference time without performance degradation.
+**To disable:** Edit the `USE_FPN=0` default in `tools/train_entry.sh`. Note that disabling FPN requires retraining from scratch—pretrained FPN weights cannot be removed at inference time without performance degradation.
 
 ---
 

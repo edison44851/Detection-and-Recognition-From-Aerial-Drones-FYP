@@ -2,18 +2,11 @@
 
 ## Quick Start
 
-We strongly recommend using the convenience launcher `tools/train_entry.sh` for all training. It wraps `torchrun` safely, sets sensible defaults, and forwards extra flags to `Fine-tune/train.py`.
+We strongly recommend using the convenience launcher `tools/train_entry.sh` for all training. Edit the variables at the top of the script for your run, then launch it directly.
 
 ```bash
-# Basic training
-tools/train_entry.sh --data-dir <path-to-dataset>
-
-# Resume from checkpoint
-tools/train_entry.sh --data-dir <path-to-dataset> \
-  --resume <path-to-checkpoint>
-
-# See all options
-tools/train_entry.sh --help
+# Configure variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 ---
@@ -25,24 +18,8 @@ tools/train_entry.sh --help
 **Ideal for:** Best performance with multi-modal RGB+Thermal data
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --use-deconv 1 \
-  --use-fpn 0 \
-  --keypoint-mode 0 \
-  --head-conv 256 \
-  --det-sigma 0.8 \
-  --focal-alpha 0.75 \
-  --focal-gamma 2.5 \
-  --det-pos-weight 1.0 \
-  --det-neg-topk-ratio 0.1 \
-  --eval-nms-radius 2.0 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 100 \
-  --batch-size 4 \
-  --resume checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth
+# Configure the Phase 6.5 variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Expected Results:**
@@ -63,20 +40,8 @@ tools/train_entry.sh \
 **Ideal for:** Fast training without bounding box supervision
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --use-deconv 1 \
-  --use-fpn 0 \
-  --keypoint-mode 1 \
-  --head-conv 256 \
-  --det-sigma 0.8 \
-  --focal-alpha 0.75 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 50 \
-  --batch-size 8 \
-  --lr-det 0.001
+# Configure the PhaseSlim variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Benefits:**
@@ -91,21 +56,8 @@ tools/train_entry.sh \
 **Ideal for:** Datasets with extreme scale variation
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --use-deconv 1 \
-  --use-fpn 1 \
-  --fpn-levels 3 \
-  --keypoint-mode 1 \
-  --fixed-box-size 16 \
-  --head-conv 256 \
-  --det-sigma 0.8 \
-  --focal-alpha 0.75 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 60 \
-  --batch-size 4
+# Configure the multi-scale variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Notes:**
@@ -120,16 +72,8 @@ tools/train_entry.sh \
 **Ideal for:** Training on limited GPU memory
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --use-deconv 1 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --batch-size 1 \
-  --lr-det 0.001 \
-  --max-epoch 100 \
-  --num-workers 0
+# Configure the single-GPU variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Trade-offs:**
@@ -147,24 +91,12 @@ tools/train_entry.sh \
 
 ```bash
 # Stage 1: Head-only training (5-10 epochs)
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 10 \
-  --lr-det 0.001 \
-  --save-interval 1
+# Update the stage-1 variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 
 # Stage 2: Fine-tune everything (20-40 epochs)
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --freeze-counter \
-  --unfreeze-epoch 0 \
-  --lr-backbone 1e-5 \
-  --lr-det 5e-5 \
-  --max-epoch 50 \
-  --resume <checkpoint-from-stage1>
+# Update RESUME and the stage-2 variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Benefits:**
@@ -174,60 +106,13 @@ tools/train_entry.sh \
 
 ---
 
-### Mixed Precision Training
-
-**Ideal for:** Reducing memory and increasing batch size
-
-```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --amp \
-  --batch-size 8 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 80
-```
-
-**Benefits:**
-- ~50% memory reduction
-- ~20% faster training
-- Maintained accuracy with proper loss scaling
-
----
-
-### Gradient Accumulation (Larger Effective Batch)
-
-**Ideal for:** Simulating larger batch on limited GPU memory
-
-```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --batch-size 2 \
-  --accum-steps 4 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 60
-```
-
-**Effective batch size:** 2 × 4 = 8 (for gradient computation)
-
----
-
 ## Dataset-Specific Configurations
 
 ### DroneRGBT (Primary Dataset)
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --num-train 906 \
-  --num-val 151 \
-  --num-test 1806 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter
+# Configure the dataset-specific variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Expected:**
@@ -242,18 +127,8 @@ tools/train_entry.sh \
 RGBT-CC has extreme scale variation, small objects, and crowded scenes. Use aggressive augmentation:
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/RGBT-CC_converted \
-  --aug-scale-min 0.5 \
-  --aug-scale-max 2.0 \
-  --aug-flip 0.5 \
-  --aug-crop 256 \
-  --thermal-clahe 1 \
-  --freeze-backbone \
-  --freeze-unet \
-  --freeze-counter \
-  --max-epoch 120 \
-  --batch-size 4
+# Configure the RGBT-CC variables in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 **Expected:**
@@ -276,23 +151,20 @@ tools/train_entry.sh \
 
 **Conservative (Safe):**
 ```bash
---lr-backbone 1e-6
---lr-unet 1e-6
---lr-det 5e-4
+--lr 1e-6
+--head-lr 5e-4
 ```
 
 **Moderate (Standard, Phase 6.5):**
 ```bash
---lr-backbone 1e-5
---lr-unet 1e-5
---lr-det 1e-3
+--lr 1e-5
+--head-lr 1e-3
 ```
 
 **Aggressive (Risk of Instability):**
 ```bash
---lr-backbone 1e-4
---lr-unet 1e-4
---lr-det 5e-3
+--lr 1e-4
+--head-lr 5e-3
 ```
 
 ### Loss Weighting
@@ -302,7 +174,7 @@ tools/train_entry.sh \
 --wot 0.0 \
 --wtv 0.0 \
 --wrd 0.0 \
---det-loss-weight 1.0
+--det-weight 1.0
 ```
 
 **Balanced detection + counting** (preserve counting ability):
@@ -310,7 +182,7 @@ tools/train_entry.sh \
 --wot 0.5 \
 --wtv 0.5 \
 --wrd 0.5 \
---det-loss-weight 1.0
+--det-weight 1.0
 ```
 
 ### Focal Loss Tuning
@@ -373,19 +245,17 @@ Then open http://localhost:6006
 
 ### Saving Checkpoints
 
+The script automatically saves the best model (by validation AP) to `--save-dir` (default: `./checkpoints_phase6`). Use `--max-model-num` to control how many are kept:
+
 ```bash
---save-interval 5          # Save every 5 epochs
---save-top-k 3             # Keep best 3 checkpoints
---checkpoint-metric ap_val # Track AP metric
+--max-model-num 3   # Keep last 3 checkpoints (default: 1)
 ```
 
 ### Resume Training
 
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --resume <checkpoint-path> \
-  --max-epoch 150           # Continue to epoch 150
+# Update RESUME and MAX_EPOCH in tools/train_entry.sh, then run:
+bash tools/train_entry.sh
 ```
 
 ### Load Pretrained (Different Architecture)
@@ -410,13 +280,13 @@ model.load_state_dict(ckpt['model'], strict=False)
 **Solutions:**
 ```bash
 # Reduce learning rate
---lr-det 5e-4
+--head-lr 5e-4
 
-# Enable gradient clipping
---grad-clip 0.5
+# Reduce backbone learning rate
+--lr 1e-6
 
-# Add debug logging
---log-level debug
+# Verify dataset
+python3 tools/quick_train_check.py
 ```
 
 ### Issue: AP Plateaus at Low Value (<0.1)
@@ -425,14 +295,14 @@ model.load_state_dict(ckpt['model'], strict=False)
 
 **Solutions:**
 ```bash
-# Increase learning rate
---lr-det 5e-3
+# Increase head learning rate
+--head-lr 5e-3
 
-# Check if backbone is frozen (should be for detection-only)
---freeze-backbone 0        # Unfreeze if needed
+# Unfreeze backbone (omit --freeze-backbone)
+# Start from a later epoch only
 
 # Verify data loading
-python3 -c "from Fine-tune.datasets.dm_detection import *; ..."
+python3 tools/quick_train_check.py
 ```
 
 ### Issue: Training Slow (Many hours for 1 epoch)
@@ -448,8 +318,7 @@ python3 -c "from Fine-tune.datasets.dm_detection import *; ..."
 --num-workers 4
 
 # Disable expensive augmentations
---aug-crop 0
---thermal-clahe 0
+--aug-crop-size 0
 ```
 
 ### Issue: Overfitting (High val AP early, then drops)
@@ -459,7 +328,7 @@ python3 -c "from Fine-tune.datasets.dm_detection import *; ..."
 **Solutions:**
 ```bash
 # Reduce learning rate
---lr-det 1e-4
+--head-lr 1e-4
 
 # Add early stopping
 --min-patience 10
@@ -474,22 +343,18 @@ python3 -c "from Fine-tune.datasets.dm_detection import *; ..."
 
 ### Seed Setting
 
+Set `PYTHONHASHSEED` for reproducible runs:
+
 ```bash
-tools/train_entry.sh \
-  --data-dir .data/DroneRGBT_converted \
-  --seed 42 \
-  --deterministic 1
+export PYTHONHASHSEED=0
+bash tools/train_entry.sh
 ```
 
-**Note:** DDP and `deterministic=True` may reduce training speed slightly
+**Note:** Full determinism is not guaranteed with DDP.
 
 ### Exact Configuration Logging
 
-All configurations are logged to `logs/<timestamp>/config.yaml`:
-
-```bash
-cat runs/*/config.yaml  # View all training configs
-```
+All training arguments are logged to the checkpoint directory (`--save-dir`). Check `train.log` in the checkpoint folder for the exact command used.
 
 ### Checkpoint Reproducibility
 

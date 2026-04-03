@@ -455,7 +455,7 @@ assert heatmap_max > 0.9  # Should reach near 1.0, not capped at 0.45
 ```
 ✅ SAFE — Released before these issues
 ✅ Higher AP (0.59 vs 0.56)
-✅ If you prefer: Use phase6.3_full_features/best_model_epoch_40.pth
+✅ If you prefer: Use `checkpoints_phase6/phase6.3_full_features/phase6_3_best_model_epoch_40.pth`
 ```
 
 ### Phase 6.4 (Failed)

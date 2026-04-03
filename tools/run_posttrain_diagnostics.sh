@@ -17,9 +17,9 @@ set -euo pipefail
 #   masked/  - Full-image inference followed by mask filtering on GT/predictions
 
 CKPT=${1:-checkpoints_phase6/phase6.3_full_features/phase6_3_best_model_epoch_40.pth}
-DATA_DIR=${2:-.data/DroneRGBT_masked}
-OUT_DIR=${3:-./.tmp_posttrain_phase6/masked}
-NUM_VIS=${4:-3}
+DATA_DIR=${2:-.data/DroneRGBT_Zero_DCE}
+OUT_DIR=${3:-./.tmp_posttrain_phase6/fake_infrared_zero_dce}
+NUM_VIS=${4:-100}
 DOWNSAMPLE=${5:-4}
 
 # Inference settings
@@ -112,26 +112,26 @@ source .venv/bin/activate && uv run Fine-tune/test_detection_vis.py \
   --indices-file "$INDICES_FILE" \
   --scores-csv "scores.csv" --scores-hist "scores.png"
 
-echo ""
-echo "4) Mask-filtered evaluation (full-image inference, then filter GT/predictions by mask)"
-python3 Fine-tune/test_detection_vis_masked.py \
-  --data-dir .data/DroneRGBT_converted \
-  --ckpt "$CKPT" \
-  --mask-dir .data/masked_image \
-  --split test \
-  --out "$OUT_DIR/masked" \
-  --num "$NUM" --num-vis "$NUM_VIS" --downsample-ratio "$DOWNSAMPLE" \
-  --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
-  --min-score "$MIN_SCORE_ORIG" --ap-dist-thresh "$AP_DIST_THRESH" \
-  --max-dets "$MAX_DETS" --nms-kernel "$NMS_KERNEL" \
-  --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
-  $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
-  $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
-  $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" ) \
-  $( [[ "$DET_USE_GN" -eq 1 ]] && echo "--det-use-gn" ) \
-  ${EVAL_NMS_RADIUS:+--eval-nms-radius "$EVAL_NMS_RADIUS"} \
-  ${EVAL_SOFT_NMS_SIGMA:+--eval-soft-nms-sigma "$EVAL_SOFT_NMS_SIGMA"} \
-  --scores-csv "scores.csv" --scores-hist "scores.png"
+# echo ""
+# echo "4) Mask-filtered evaluation (full-image inference, then filter GT/predictions by mask)"
+# python3 Fine-tune/test_detection_vis_masked.py \
+#   --data-dir .data/DroneRGBT_converted \
+#   --ckpt "$CKPT" \
+#   --mask-dir .data/masked_image \
+#   --split test \
+#   --out "$OUT_DIR/masked" \
+#   --num "$NUM" --num-vis "$NUM_VIS" --downsample-ratio "$DOWNSAMPLE" \
+#   --batch-size "$BATCH_SIZE" --num-workers "$NUM_WORKERS" \
+#   --min-score "$MIN_SCORE_ORIG" --ap-dist-thresh "$AP_DIST_THRESH" \
+#   --max-dets "$MAX_DETS" --nms-kernel "$NMS_KERNEL" \
+#   --head-conv "$HEAD_CONV" $( [[ "$USE_DECONV" -eq 1 ]] && echo "--use-deconv" ) \
+#   $( [[ "$USE_FPN" -eq 1 ]] && echo "--use-fpn" ) \
+#   $( [[ "$KEYPOINT_MODE" -eq 1 ]] && echo "--keypoint-mode" ) \
+#   $( [[ "$USE_BCE_LOGITS" -eq 1 ]] && echo "--use-bce-logits" ) \
+#   $( [[ "$DET_USE_GN" -eq 1 ]] && echo "--det-use-gn" ) \
+#   ${EVAL_NMS_RADIUS:+--eval-nms-radius "$EVAL_NMS_RADIUS"} \
+#   ${EVAL_SOFT_NMS_SIGMA:+--eval-soft-nms-sigma "$EVAL_SOFT_NMS_SIGMA"} \
+#   --scores-csv "scores.csv" --scores-hist "scores.png"
 
 echo ""
 echo "=== Evaluation Complete ==="
