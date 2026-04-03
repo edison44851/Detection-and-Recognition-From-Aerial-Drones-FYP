@@ -1,32 +1,33 @@
 # Development Timeline: Phase 1-6 Evolution
 
-**Status:** ✅ **PROJECT LOCKED** (Feb 20, 2026) — Development complete, documentation archived
+**Status:** ✅ **PROJECT COMPLETE** (April 4, 2026) — Final Report Submitted
 
-This document consolidates the experimental phases showing how the detection architecture evolved from catastrophic failure (baseline) through six phases of systematic improvements to the current best checkpoint.
+This document consolidates the experimental phases showing how the detection architecture evolved from catastrophic failure (baseline) through six phases of systematic improvements to Phase 6.5.
 
 ---
 
 ## Quick Reference: All Phases at a Glance
 
-| Phase | Key Changes | AP (RAW) | Recall | Precision | Status | Checkpoint |
-|-------|-------------|----------|--------|-----------|--------|------------|
-| **Baseline** | Shallow 1-layer heads, stride-8, no NMS | ~0.01% | 0.5-14% | ~1% | ❌ Failed | N/A |
-| **Phase 1** | Initial CenterHead, deconv upsample | ~0.48 | ~60% | ~56% | ✅ Working | `1130-145629` |
-| **Phase 2** | Deeper heads (256ch), stride-4 | ~0.48 | 59% | 56% | ✅ Working | `1205-155221` |
-| **Phase 3** | + SimpleFPN + Keypoint mode | ~0.42 | 54% | 58% | ⚠️ Mixed | `1209-205427` |
-| **Phase 4** | + Teammate features (DISABLED) | ~0.46 | 53% | 55% | ❌ Issues | `1213-090950` |
-| **Phase 6.1** | Sharper Gaussians (σ=0.8) | +101% | 66.3% | 38.2% | ✅ | `phase6.1_sigma0.8` |
-| **Phase 6.2** | Stronger loss signals | ~0.54 | 69.6% | 44.1% | ✅ | `phase6.2_stronger` |
-| **Phase 6.3** | Full features (r+t+b) | **0.59** | 70.1% | 56.4% | ✅ Historical | `phase6.3_full_features` |
-| **Phase 6.4** | Better adaptor (FAILED) | **0.015** | 18.0% | 2.7% | ❌ Reverted | `phase6.4` |
-| **Phase 6.5** | Better bias init (-2.0) | **0.56** | 69.9% | 56.4% | ✅ **CURRENT** | `phase6.5_better_bias` |
+| Phase | Key Changes | AP@8px (RAW) | Precision | Recall | F1 | Status |
+|-------|-------------|----------|-----------|--------|-----|--------|
+| **Baseline** | Shallow 1-layer heads, stride-8 | 0.0006 | 0.0355 | 0.1706 | 0.0075 | ❌ Failed |
+| **Phase 1** | CenterHead, deconv upsample, stride-4 | 0.0588 | 0.1706 | 0.5906 | 0.2658 | ✅ Working |
+| **Phase 2** | Deeper heads (256ch), better bias | 0.4773 | 0.5593 | 0.5923 | 0.5754 | ✅ Baseline |
+| **Phase 3** | + SimpleFPN + keypoint-only | 0.4185 | 0.5774 | 0.5362 | 0.5560 | ⚠️ Mixed |
+| **Phase 4** | + Teammate features (5 suppression methods) | 0.4575 | 0.4279 | 0.6584 | 0.5187 | ❌ Problematic |
+| **Phase 5** | Full rollback, stability fixes | -- | -- | -- | -- | 🔧 Refactor |
+| **Phase 6.1** | Sharper Gaussians (σ=0.8) | 0.4675 | 0.3822 | 0.6628 | 0.4848 | ✅ Transition |
+| **Phase 6.2** | Stronger loss signals | 0.5403 | 0.4412 | 0.6963 | 0.5402 | ✅ Good |
+| **Phase 6.3** | Full features (RGB + Thermal + Broker) | **0.5908** | **0.5642** | **0.7009** | **0.6252** | ✅⭐ **BEST AP** |
+| **Phase 6.4** | Better adaptor (3×3+3×3+1×1) | 0.0152 | 0.0272 | 0.1792 | 0.0472 | ❌ Catastrophic |
+| **Phase 6.5** | Better bias init (-4.6 → -2.0) | 0.5622 | 0.5641 | 0.6993 | 0.6245 | ✅ **ADOPTED** |
 
-**Legend:**
-- AP (RAW): Detection AP without NMS (full image)
-- AP@8px in this development log (phase model-selection runs): computed with simple trapezoidal integration (`np.trapz`) on the raw PR curve for fast iteration.
-- Note: trapz-based AP here reflects historical model-selection workflow; baseline-comparison AP values in `README.md` use all-point interpolation.
-- Status: ✅ Success, ⚠️ Mixed/Transition, ❌ Issues/Failure
-- **CURRENT:** Phase 6.5 is the recommended checkpoint
+**Important Notes:**
+- **Phase 6.3** (AP=0.5908 RAW): Best performance for baseline comparison; use with fair NMS (r=11.07px) for 0.7018 AP@8px
+- **Phase 6.5** (AP=0.5622 RAW): Adopted checkpoint; better confidence calibration and smoother TP/FP distribution
+- AP@8px values computed with trapezoidal integration (fast iteration); baseline comparisons use all-point interpolation
+- Phase 6.4 represents complete catastrophic failure from over-parameterized adapter (AP dropped 98%)
+- Status: ✅ Success, ⚠️ Mixed/Transition, ❌ Issues/Failure, 🔧 Refactor
 
 ---
 
@@ -305,7 +306,7 @@ FP reduction: -38.5%
 - Converged very fast at epoch 40 (det loss 7.32 → 0.63 → 0.38)
 - Training loss dropped dramatically (faster than Phase 6.1-6.2)
 
-**Checkpoint:** `checkpoints_phase6/phase6.3_full_features/best_model_epoch_40.pth`
+**Checkpoint:** `checkpoints_phase6/phase6.3_full_features/phase6_3_best_model_epoch_40.pth`
 
 **Note:** Later superseded by Phase 6.5 for better confidence calibration (despite slightly lower AP)
 
@@ -381,7 +382,7 @@ F1: Improved (better balanced TP distribution)
 
 **Key Insight:** Detection confidence is not just about raw numbers (TP count); calibration matters for downstream tasks
 
-**Checkpoint:** `checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth` **← RECOMMENDED**
+**Checkpoint:** `checkpoints_phase6/phase6.5_better_bias/phase6_5_best_model_epoch_68.pth` **← RECOMMENDED**
 
 ### Phase 6.5 Visual Results (AP@8px)
 
@@ -398,22 +399,6 @@ Below are example detections from Phase 6.5, the current best checkpoint with op
 ![Phase 6.5 Score Histogram](../image/compare/phase6.5/scores.png)
 
 *Observations: Better-calibrated confidence with less negative bias (-2.0 vs -4.6). More balanced TP distribution with improved ORIG mode performance (+14.5%).*
-
-### Phase 6.5 Visual Results (AP@15px) — More Lenient Matching
-
-Below are the same detections evaluated with 15px distance threshold (more tolerant TP matching):
-
-| Image ID | Detection Result |
-|----------|------------------|
-| #6 | ![Phase 6.5 AP@15px - Image 6](../image/compare/phase6.5_AP15/6.jpg) |
-| #30 | ![Phase 6.5 AP@15px - Image 30](../image/compare/phase6.5_AP15/30.jpg) |
-| #117 | ![Phase 6.5 AP@15px - Image 117](../image/compare/phase6.5_AP15/117.jpg) |
-| #1206 | ![Phase 6.5 AP@15px - Image 1206](../image/compare/phase6.5_AP15/1206.jpg) |
-
-**Score Distribution Analysis:**
-![Phase 6.5 AP@15px Score Histogram](../image/compare/phase6.5_AP15/scores.png)
-
-*Comparison: AP@15px shows RAW 0.7148, TILES 0.6669, ORIG 0.5590 (higher than AP@8px due to more lenient spatial matching). More detections count as TPs with larger tolerance radius.*
 
 ---
 
@@ -494,7 +479,7 @@ Phase 6.5:    AP=0.56  [Adopted for calibration] ✅ **CURRENT**
 
 ## Recommended Workflow for Future Experimentation
 
-1. **Start from Phase 6.5 checkpoint:** `checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth`
+1. **Start from Phase 6.5 checkpoint:** `checkpoints_phase6/phase6.5_better_bias/phase6_5_best_model_epoch_68.pth`
 2. **Test on target dataset** with consistent evaluation (RAW mode)
 3. **Tune only post-processing** (thresholds, NMS radius) before investing in retraining
 4. **If retraining needed:** Use Phase 6 training setup (graduated unfreezing, focal loss)

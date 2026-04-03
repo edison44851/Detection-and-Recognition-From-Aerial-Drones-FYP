@@ -6,10 +6,14 @@
 
 ```bash
 python3 Fine-tune/test_detection_vis.py \
-  --ckpt checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth \
+  --ckpt checkpoints_phase6/phase6.5_better_bias/phase6_5_best_model_epoch_68.pth \
   --data-dir .data/DroneRGBT_converted \
   --num 64 \
-  --use-deconv 1 \
+  --use-deconv \
+  --use-fpn \
+  --keypoint-mode \
+  --use-bce-logits \
+  --det-use-gn \
   --head-conv 256
 ```
 
@@ -18,9 +22,7 @@ This generates RGB+Thermal overlays with predicted bounding boxes for visual ins
 ### Comprehensive Diagnostics & Metrics
 
 ```bash
-bash tools/run_posttrain_diagnostics.sh \
-  checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth \
-  .data/DroneRGBT_converted
+bash tools/run_posttrain_diagnostics.sh
 ```
 
 This runs complete evaluation:
@@ -33,7 +35,7 @@ This runs complete evaluation:
 
 ```bash
 python3 Fine-tune/test_game.py \
-  --ckpt checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth \
+  --ckpt checkpoints_phase6/phase6.5_better_bias/phase6_5_best_model_epoch_68.pth \
   --data-dir .data/DroneRGBT_converted
 ```
 
@@ -55,6 +57,11 @@ Verifies counting metrics (GAME, MAE) unchanged while training detection
 python3 Fine-tune/test_detection_vis.py \
   --ckpt <checkpoint> \
   --data-dir <dataset> \
+  --use-deconv \
+  --use-fpn \
+  --keypoint-mode \
+  --use-bce-logits \
+  --det-use-gn \
   --eval-mode raw
 ```
 
@@ -87,6 +94,11 @@ python3 Fine-tune/test_detection_vis.py \
 python3 Fine-tune/test_detection_vis.py \
   --ckpt <checkpoint> \
   --data-dir <dataset> \
+  --use-deconv \
+  --use-fpn \
+  --keypoint-mode \
+  --use-bce-logits \
+  --det-use-gn \
   --eval-mode tiled \
   --tile-size 256 \
   --tile-overlap 0.5
@@ -115,6 +127,11 @@ python3 Fine-tune/test_detection_vis.py \
 python3 Fine-tune/test_detection_vis.py \
   --ckpt <checkpoint> \
   --data-dir <dataset> \
+  --use-deconv \
+  --use-fpn \
+  --keypoint-mode \
+  --use-bce-logits \
+  --det-use-gn \
   --eval-mode orig
 ```
 
@@ -125,27 +142,51 @@ python3 Fine-tune/test_detection_vis.py \
 
 ---
 
-## Phase 6.5 AP@15px Mode Comparison (RAW vs TILES vs ORIG)
+## Phase 6.5 AP@8px Mode Comparison (RAW vs TILES vs ORIG)
 
-The images below use the AP@15px evaluation rule (15px x 15px boxes, IoU >= 50%) and show how inference mode changes output density and calibration.
+All values below use AP@8px (distance-based matching), which is the standardized metric for this project.
 
-| Mode | AP@15px | Precision | Recall | F1 | Notes |
-|------|---------|-----------|--------|-----|-------|
-| **RAW** | **0.7148** | **0.6481** | **0.8035** | **0.7175** | Full image, no tiling |
-| **TILES** | **0.6669** | **0.7819** | **0.7382** | **0.7594** | Overlapping tiles + merge |
-| **ORIG** | **0.5590** | **0.8587** | **0.6076** | **0.7117** | Legacy thresholds |
+| Mode | AP@8px | Precision | Recall | F1 | Notes |
+|------|--------|-----------|--------|-----|-------|
+| **RAW** | **0.5622** | 0.5641 | 0.6993 | 0.6245 | Full image, no tiling |
+| **TILES** | **0.5281** | 0.6846 | 0.6463 | 0.6649 | Overlapping tiles + merge |
+| **ORIG** | **0.4502** | 0.7620 | 0.5392 | 0.6315 | Legacy thresholds |
 
-| Mode | Image 6 | Image 30 |
-|------|---------|----------|
-| RAW | ![Phase 6.5 AP15 RAW - Image 6](../image/compare/phase6.5_AP15/6.jpg) | ![Phase 6.5 AP15 RAW - Image 30](../image/compare/phase6.5_AP15/30.jpg) |
-| TILES | ![Phase 6.5 AP15 TILES - Image 6](../image/compare/phase6.5_AP15/tiles/6.jpg) | ![Phase 6.5 AP15 TILES - Image 30](../image/compare/phase6.5_AP15/tiles/30.jpg) |
-| ORIG | ![Phase 6.5 AP15 ORIG - Image 6](../image/compare/phase6.5_AP15/orig/6.jpg) | ![Phase 6.5 AP15 ORIG - Image 30](../image/compare/phase6.5_AP15/orig/30.jpg) |
+For AP@8px visual examples, see:
+- `../image/compare/phase6.3/` (best AP checkpoint)
+- `../image/compare/phase6.5/` (adopted checkpoint)
 
-| Mode | Image 117 | Image 1206 |
-|------|-----------|------------|
-| RAW | ![Phase 6.5 AP15 RAW - Image 117](../image/compare/phase6.5_AP15/117.jpg) | ![Phase 6.5 AP15 RAW - Image 1206](../image/compare/phase6.5_AP15/1206.jpg) |
-| TILES | ![Phase 6.5 AP15 TILES - Image 117](../image/compare/phase6.5_AP15/tiles/117.jpg) | ![Phase 6.5 AP15 TILES - Image 1206](../image/compare/phase6.5_AP15/tiles/1206.jpg) |
-| ORIG | ![Phase 6.5 AP15 ORIG - Image 117](../image/compare/phase6.5_AP15/orig/117.jpg) | ![Phase 6.5 AP15 ORIG - Image 1206](../image/compare/phase6.5_AP15/orig/1206.jpg) |
+---
+
+## Baseline Comparison (AP@8px)
+
+This section is the canonical location for model-to-model comparison details.
+
+### Evaluation Protocol
+
+- All models use AP@8px (distance-based matching).
+- Baseline detections (box-based) are converted to an AP@8px-equivalent criterion.
+- Fair-comparison run for Phase 6.3 uses radius NMS `r=11.07` to match baseline suppression scale.
+
+### Quantitative Results
+
+| Model | Modality | AP@8px | Precision | Recall | F1 |
+|---|---|---:|---:|---:|---:|
+| Phase 6.3 (fair NMS) | RGBT | **0.7018** | **0.7868** | 0.7204 | **0.7521** |
+| YOLO26s | Thermal | 0.6210 | 0.6685 | **0.8111** | 0.7329 |
+| RetinaNet | Thermal | 0.1380 | 0.6945 | 0.6307 | 0.6611 |
+| Faster R-CNN | Thermal | 0.0992 | 0.7337 | 0.5323 | 0.6170 |
+| YOLO26s | RGB | 0.3259 | 0.5115 | 0.5320 | 0.5216 |
+| RetinaNet | RGB | 0.0547 | 0.4910 | 0.5324 | 0.5109 |
+| Faster R-CNN | RGB | 0.0402 | 0.4776 | 0.5000 | 0.4885 |
+
+### AP@8px Visuals (Report-Sourced)
+
+- Phase 6.3 (Image 30): `../image/report_ap8/phase6_3_30_nms_1107.jpg`
+- Phase 6.3 (Image 117): `../image/report_ap8/phase6_3_117_nms_1107.jpg`
+- Phase 6.5 RAW (Image 117): `../image/report_ap8/phase6_5-117.jpg`
+- Phase 6.5 TILES (Image 117): `../image/report_ap8/phase6_5-117_tiles.jpg`
+- PR curve comparison: `../image/report_ap8/pr_curves_comparison.png`
 
 ---
 
@@ -164,11 +205,8 @@ The images below use the AP@15px evaluation rule (15px x 15px boxes, IoU >= 50%)
 **How to Tune:**
 ```bash
 # Run grid search across thresholds
-bash tools/run_posttrain_grid.sh \
-  <checkpoint> \
-  <dataset> \
-  <num-images> \
-  <num-workers>
+# Update the variables in tools/run_posttrain_grid.sh, then run:
+bash tools/run_posttrain_grid.sh
 ```
 
 Then examine output CSVs:
@@ -405,7 +443,7 @@ RMSE: 21.4     (root mean squared error)
 ```yaml
 # inference_config.yaml
 model:
-  checkpoint: checkpoints_phase6/phase6.5_better_bias/best_model_epoch_68.pth
+  checkpoint: checkpoints_phase6/phase6.5_better_bias/phase6_5_best_model_epoch_68.pth
   use_deconv: true
   use_fpn: false
   head_conv: 256
