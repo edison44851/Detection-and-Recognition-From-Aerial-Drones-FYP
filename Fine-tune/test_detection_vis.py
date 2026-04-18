@@ -32,6 +32,12 @@ from models.detection.det_model import DetectionHeadWrapper
 from utils.detection_eval import heatmap_peaks
 
 
+RGB_NORM_MEAN = np.array([0.407, 0.389, 0.396], dtype=np.float32)
+RGB_NORM_STD = np.array([0.241, 0.246, 0.242], dtype=np.float32)
+T_NORM_MEAN = np.array([0.499, 0.168, 0.431], dtype=np.float32)
+T_NORM_STD = np.array([0.308, 0.168, 0.181], dtype=np.float32)
+
+
 def collate_fn(batch):
     """Custom collate function to handle variable-length ground truth points."""
     rgb = torch.stack([item['rgb'] for item in batch])
@@ -132,21 +138,38 @@ def vis_on_image(img_rgb, img_t, preds_px, downsample_ratio, save_path):
     return canvas
 
 
-def preprocess_image(tensor_img):
-    # tensor expected [C,H,W] or [1,C,H,W]
+def preprocess_image(tensor_img, mean=None, std=None, to_bgr=True):
+    """Convert a tensor image to uint8 for OpenCV visualization.
+
+    If mean/std are provided, this function de-normalizes first. Output is BGR
+    by default so OpenCV drawing and imwrite preserve expected colors.
+    """
     if isinstance(tensor_img, torch.Tensor):
         if tensor_img.dim() == 4:
             tensor_img = tensor_img[0]
-        arr = tensor_img.detach().cpu().numpy()
+        arr = tensor_img.detach().cpu().float().numpy()
         arr = np.transpose(arr, (1, 2, 0))
-        # normalize to 0-255 for visualization (assume input in 0..1 or -1..1)
-        arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-9)
-        arr = (arr * 255).astype(np.uint8)
+
+        if mean is not None and std is not None and arr.shape[2] == len(mean):
+            mean_arr = np.asarray(mean, dtype=np.float32).reshape(1, 1, -1)
+            std_arr = np.asarray(std, dtype=np.float32).reshape(1, 1, -1)
+            arr = arr * std_arr + mean_arr
+        elif np.nanmin(arr) < 0.0 or np.nanmax(arr) > 1.0:
+            arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-9)
+
+        arr = np.clip(arr, 0.0, 1.0)
+        arr = (arr * 255.0).astype(np.uint8)
+
         if arr.shape[2] == 1:
             arr = np.repeat(arr, 3, axis=2)
+        if to_bgr and arr.shape[2] >= 3:
+            arr = arr[:, :, :3][:, :, ::-1].copy()
         return arr
-    else:
-        return tensor_img
+
+    arr = np.asarray(tensor_img)
+    if to_bgr and arr.ndim == 3 and arr.shape[2] >= 3:
+        arr = arr[:, :, :3][:, :, ::-1].copy()
+    return arr
 
 
 def infer_and_visualize(args):
@@ -371,8 +394,8 @@ def infer_and_visualize(args):
             # Only visualize selected indices
             if idx in vis_indices:
                 # Preprocess images only for visualization
-                rgb_vis = preprocess_image(rgb_batch[i])
-                t_vis = preprocess_image(t_batch[i])
+                rgb_vis = preprocess_image(rgb_batch[i], mean=RGB_NORM_MEAN, std=RGB_NORM_STD, to_bgr=True)
+                t_vis = preprocess_image(t_batch[i], mean=T_NORM_MEAN, std=T_NORM_STD, to_bgr=True)
                 
                 # annotate preds_px with matched flags in original order (not sorted)
                 preds_with_flags = []

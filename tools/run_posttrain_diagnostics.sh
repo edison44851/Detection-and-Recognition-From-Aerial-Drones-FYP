@@ -17,9 +17,9 @@ set -euo pipefail
 #   masked/  - Full-image inference followed by mask filtering on GT/predictions
 
 CKPT=${1:-checkpoints_phase6/phase6.3_full_features/phase6_3_best_model_epoch_40.pth}
-DATA_DIR=${2:-.data/DroneRGBT_Zero_DCE}
-OUT_DIR=${3:-./.tmp_posttrain_phase6/fake_infrared_zero_dce}
-NUM_VIS=${4:-100}
+DATA_DIR=${2:-.data/DroneRGBT_converted}
+OUT_DIR=${3:-./.tmp_posttrain_phase6/inference_fixed_phase_6.3}
+NUM_VIS=${4:-1800}
 DOWNSAMPLE=${5:-4}
 
 # Inference settings
@@ -30,7 +30,7 @@ NUM_WORKERS=4
 MIN_SCORE_RAW=0.1    # Raw: Low threshold to capture all detections for analysis
 MIN_SCORE_TILE=0.3   # SAHI-style: Phase 6.3 adjusted for full features 
 MIN_SCORE_ORIG=0.4   # Production: Phase 6.3 baseline (note: may be too high, consider 0.15-0.20)
-AP_DIST_THRESH=15.0  # AP distance threshold (pixels) - increased to 15px to account for slight localization offsets
+AP_DIST_THRESH=8.0  # AP distance threshold (pixels) - increased to 15px to account for slight localization offsets
 MAX_DETS=300
 EVAL_NMS_RADIUS=11.07  # Match training configuration (radius NMS, 11.07 px)
 EVAL_SOFT_NMS_SIGMA=0.5  # Match training configuration

@@ -24,6 +24,10 @@ from datasets.dm_detection import DetectionDataset
 from models.counting.swin_unet import Swin_BM_RGBT
 from models.detection.det_model import DetectionHeadWrapper
 from test_detection_vis import (
+    RGB_NORM_MEAN,
+    RGB_NORM_STD,
+    T_NORM_MEAN,
+    T_NORM_STD,
     collate_fn,
     nms_radius,
     preprocess_image,
@@ -292,7 +296,7 @@ def infer_and_visualize(args):
             if args.max_dets and args.max_dets > 0:
                 preds_px = sorted(preds_px, key=lambda x: x[2], reverse=True)[:int(args.max_dets)]
 
-            rgb_vis = preprocess_image(rgb_batch[i])
+            rgb_vis = preprocess_image(rgb_batch[i], mean=RGB_NORM_MEAN, std=RGB_NORM_STD, to_bgr=True)
             if img_id in mask_map:
                 if img_id not in mask_cache:
                     mask_cache[img_id] = load_binary_mask(mask_map[img_id], rgb_vis.shape)
@@ -335,7 +339,7 @@ def infer_and_visualize(args):
             fn = (len(gt_pts) - sum(gt_matched)) if len(gt_pts) > 0 else 0
 
             if eval_idx in vis_indices:
-                t_vis = preprocess_image(t_batch[i])
+                t_vis = preprocess_image(t_batch[i], mean=T_NORM_MEAN, std=T_NORM_STD, to_bgr=True)
                 preds_with_flags = []
                 sorted_map = {(p[0], p[1], p[2]): j for j, p in enumerate(preds_sorted)}
                 for p in preds_px:
