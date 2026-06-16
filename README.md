@@ -40,9 +40,7 @@ python3 Fine-tune/test_detection_vis.py \
 ### 3) Full Diagnostics
 
 ```bash
-bash tools/run_posttrain_diagnostics.sh \
-  phase6_3_best_model_epoch_40.pth \
-  .data/DroneRGBT_converted
+bash tools/run_posttrain_diagnostics.sh
 ```
 
 ## AP@8px Results Summary

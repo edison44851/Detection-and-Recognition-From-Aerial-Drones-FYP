@@ -43,16 +43,12 @@ Verifies counting metrics (GAME, MAE) unchanged while training detection
 
 ---
 
-## Evaluation Modes Explained
+## Inference Modes and Options
 
-### RAW Mode (Recommended)
+### Standard inference
 
-**What it does:**
-- Single-pass inference on full-resolution image
-- Standard CenterNet evaluation
-- No tiling or preprocessing tricks
+This script performs full-image inference by default. Use the following command for standard evaluation and visualization:
 
-**Command:**
 ```bash
 python3 Fine-tune/test_detection_vis.py \
   --ckpt <checkpoint> \
@@ -62,34 +58,15 @@ python3 Fine-tune/test_detection_vis.py \
   --keypoint-mode \
   --use-bce-logits \
   --det-use-gn \
-  --eval-mode raw
+  --head-conv 256
 ```
 
-**Output Characteristics:**
-- Predictions distributed naturally where objects exist
-- Score range: 0.01-0.999
-- Number of detections: varies by image (50-200 typical)
+This produces CenterNet-style peak extraction on the full image and is the primary supported inference path.
 
-**When to Use:**
-- Primary evaluation metric
-- Deployment scenario
-- Comparing models fairly
+### Optional post-extraction NMS
 
----
+The inference script also supports experimental post-processing of extracted detections:
 
-### TILES Mode (Scale-Robust)
-
-**What it does:**
-- Divide image into overlapping tiles (e.g., 256×256)
-- Run inference on each tile separately
-- Merge predictions with NMS across tiles
-
-**Benefits:**
-- Reduces stride-related quantization error
-- Better for scale variation (different object sizes)
-- Can improve AP on complex imagery
-
-**Command:**
 ```bash
 python3 Fine-tune/test_detection_vis.py \
   --ckpt <checkpoint> \
@@ -99,58 +76,14 @@ python3 Fine-tune/test_detection_vis.py \
   --keypoint-mode \
   --use-bce-logits \
   --det-use-gn \
-  --eval-mode tiled \
-  --tile-size 256 \
-  --tile-overlap 0.5
+  --head-conv 256 \
+  --eval-nms-radius 4.0
 ```
 
-**Parameters:**
-- `tile-size`: Size of each tile (256 typical)
-- `tile-overlap`: Overlap fraction (0.5 = 50% overlap)
+- `--eval-nms-radius <float>` applies radius-based NMS after peak extraction.
+- `--eval-soft-nms-sigma <float>` applies Gaussian soft-NMS decay after extraction.
 
-**Trade-offs:**
-- More stable AP across varied scales
-- Slower inference (~2-3× slower than RAW)
-- More detections (may increase FP if thresholds not adjusted)
-
----
-
-### ORIG Mode (Legacy)
-
-**What it does:**
-- Historical evaluation mode with calibrated thresholds
-- Applied carefully tuned score threshold (0.3) and NMS radius (4.0)
-- Maintains backward compatibility with past results
-
-**Command:**
-```bash
-python3 Fine-tune/test_detection_vis.py \
-  --ckpt <checkpoint> \
-  --data-dir <dataset> \
-  --use-deconv \
-  --use-fpn \
-  --keypoint-mode \
-  --use-bce-logits \
-  --det-use-gn \
-  --eval-mode orig
-```
-
-**Important Notes:**
-- Thresholds hardcoded for Phase 6.3+ checkpoints
-- Not recommended for new work (use RAW instead)
-- Phase 6.5 achieves +14.5% in this mode (better bias calibration)
-
----
-
-## Phase 6.5 AP@8px Mode Comparison (RAW vs TILES vs ORIG)
-
-All values below use AP@8px (distance-based matching), which is the standardized metric for this project.
-
-| Mode | AP@8px | Precision | Recall | F1 | Notes |
-|------|--------|-----------|--------|-----|-------|
-| **RAW** | **0.5622** | 0.5641 | 0.6993 | 0.6245 | Full image, no tiling |
-| **TILES** | **0.5281** | 0.6846 | 0.6463 | 0.6649 | Overlapping tiles + merge |
-| **ORIG** | **0.4502** | 0.7620 | 0.5392 | 0.6315 | Legacy thresholds |
+These options are useful for exploring score thresholds and duplicate suppression behavior without changing the core inference pipeline.
 
 For AP@8px visual examples, see:
 - `../image/compare/phase6.3/` (best AP checkpoint)

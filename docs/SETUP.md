@@ -180,8 +180,8 @@ Convert raw datasets to internal format (`*_RGB.jpg`, `*_T.jpg`, `*_GT.npy`):
 
 ```bash
 python3 tools/convert_dronergbt.py \
-  --src-root .data/DroneRGBT \
-  --out-root .data/DroneRGBT_converted
+  --src .data/DroneRGBT \
+  --out .data/DroneRGBT_converted
 ```
 
 **Output structure:**
@@ -199,8 +199,8 @@ python3 tools/convert_dronergbt.py \
 
 ```bash
 python3 tools/convert_rgbtcc.py \
-  --src-root .data/RGBT-CC \
-  --out-root .data/RGBT-CC_converted
+  --src .data/RGBT-CC \
+  --out .data/RGBT-CC_converted
 ```
 
 ### Compute Thermal Statistics (RGBT-CC Only)

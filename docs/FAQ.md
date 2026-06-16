@@ -96,7 +96,7 @@ uv pip install -e .
 1. Visit: https://github.com/VisDrone/DroneRGBT
 2. Follow their download instructions (may require form submission)
 3. Extract to `.data/DroneRGBT/`
-4. Convert: `python3 tools/convert_dronergbt.py --src-root .data/DroneRGBT --out-root .data/DroneRGBT_converted`
+4. Convert: `python3 tools/convert_dronergbt.py --src .data/DroneRGBT --out .data/DroneRGBT_converted`
 
 ---
 

@@ -20,17 +20,13 @@ This directory contains standalone utility scripts for dataset conversion, evalu
 **Usage**:
 ```bash
 python3 tools/convert_dronergbt.py \
-  --src-root .data/DroneRGBT \
-  --out-root .data/DroneRGBT_converted
+  --src .data/DroneRGBT \
+  --out .data/DroneRGBT_converted
 ```
 
 **Required Arguments**:
-- `--src-root`: Path to downloaded DroneRGBT directory (contains `Train/`, `Test/` subdirs)
-- `--out-root`: Output directory for converted dataset
-
-**Optional Arguments**:
-- `--force`: Overwrite existing output directory
-- `--num-workers`: Parallel workers for conversion (default: 4)
+- `--src`: Path to downloaded DroneRGBT directory (contains `Train/`, `Test/` subdirs)
+- `--out`: Output directory for converted dataset
 
 **Input Structure**:
 ```
@@ -69,17 +65,13 @@ DroneRGBT_converted/
 **Usage**:
 ```bash
 python3 tools/convert_rgbtcc.py \
-  --src-root .data/RGBT-CC \
-  --out-root .data/RGBT-CC_converted
+  --src .data/RGBT-CC \
+  --out .data/RGBT-CC_converted
 ```
 
 **Required Arguments**:
-- `--src-root`: Path to downloaded RGBT-CC directory
-- `--out-root`: Output directory for converted dataset
-
-**Optional Arguments**:
-- `--force`: Overwrite existing output
-- `--num-workers`: Parallel conversion workers (default: 4)
+- `--src`: Path to downloaded RGBT-CC directory
+- `--out`: Output directory for converted dataset
 
 **Input Structure**:
 ```
